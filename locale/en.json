@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Git Panel",
+    "description": "Sidebar git panel: branch, working-tree status, commit graph, diff and safe git operations."
+  }
+}

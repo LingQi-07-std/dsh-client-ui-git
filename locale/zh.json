@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Git 面板",
+    "description": "侧栏 Git 面板：分支、工作区状态、提交图、diff 与安全写操作。"
+  }
+}
