@@ -18,7 +18,9 @@ const PROFILE_DIR = process.env.DSH_PROFILE_DIR ?? "C:/Users/13953/.dsh/profiles
 const PROFILE_NM = join(PROFILE_DIR, "node_modules");
 const PKG = "@dsh-external/dsh-client-ui-git";
 const require = createRequire(join(PROFILE_NM, "noop.js"));
-const sha = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
+// Compare text CONTENT, not bytes: git's checkout may rewrite line endings
+// (core.autocrlf / .gitattributes), and CRLF vs LF has no runtime effect.
+const sha = (file) => createHash("sha256").update(readFileSync(file, "utf8").replace(/\r\n/g, "\n")).digest("hex");
 const results = [];
 let failed = 0;
 
