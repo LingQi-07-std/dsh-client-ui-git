@@ -313,6 +313,35 @@ await check("falls back to the owning workspace when the session has no cwd", as
 	}
 });
 
+await check("uses the most recently active session when none is selected", async () => {
+	// Some deployments run with an empty selection cell (`current === undefined`)
+	// while the list still holds every session row.
+	const previousSession = { current: SessionState.current, byId: SessionState.byId };
+	const previousWorkspace = { items: WorkspaceState.items, recentWorkspaceId: WorkspaceState.recentWorkspaceId };
+	try {
+		SessionState.current = void 0;
+		SessionState.byId = {
+			"session-old": { cwd: "G:\\old-repo", updatedAt: 100 },
+			"session-live": { cwd: "G:\\live-repo", updatedAt: 999999 }
+		};
+		WorkspaceState.items = [{ workspaceId: "w-9", path: "G:\\fallback-dir", sessionIds: [], title: "fallback", createdAt: "", updatedAt: "" }];
+		WorkspaceState.recentWorkspaceId = "w-9";
+		slotStore.delete(EntryComponent);
+		renderTree(renderComponent(EntryComponent, entryProps));
+		await Promise.all(pendingEffects.splice(0).map((fn) => fn()));
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		renderTree(renderComponent(EntryComponent, entryProps));
+		const storeNow = typeof lastGetSnapshot === "function" ? lastGetSnapshot() : null;
+		assert(storeNow?.cwd === "G:\\live-repo", `expected the latest session cwd, got ${JSON.stringify(storeNow?.cwd)}`);
+	} finally {
+		SessionState.current = previousSession.current;
+		SessionState.byId = previousSession.byId;
+		WorkspaceState.items = previousWorkspace.items;
+		WorkspaceState.recentWorkspaceId = previousWorkspace.recentWorkspaceId;
+		slotStore.delete(EntryComponent);
+	}
+});
+
 console.log(results.join("\n"));
 process.exitCode = failed > 0 ? 1 : 0;
 console.log(process.exitCode === 1 ? "\nSOME CLIENT RENDER CHECKS FAILED" : "\nALL CLIENT RENDER CHECKS PASSED");
