@@ -1,0 +1,8 @@
+# Keep the working tree byte-identical to what is deployed: DSH loads the
+# plugin files straight from the profile copy, so CRLF conversion would make
+# `node test-install.mjs` report deploy drift after every checkout.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
