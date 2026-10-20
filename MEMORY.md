@@ -61,3 +61,16 @@
 - DSH 每次重启 Web 端口都变：用户说"打不开/样式没了"先查端口，别先改代码。
 - `SlotErrorBoundary` 捕获 React #130 后会**永久 abdicate** 该条目，不会自愈 —— 元素类型必须保证有定义。
 - `plugin_manager list_bundles` 里的 `source` 才是真实安装位置；`enabled: true` 不代表文件是最新的。
+
+## 10. MCP 工具面（0.2.0 之后）
+
+- 工具清单在 `mcp/server.mjs`，运行副本 `$DSH_HOME/mcp-git/server.mjs`；**改完必须 sync + 重启 DSH**，否则会话里还是旧工具。
+- 危险工具（`restore` / `reset`）用条件注册：`if (dangerousToolsEnabled()) server.tool(...)`。默认不注册，设置页只需写 `$DSH_HOME/mcp-git/config.json` 的 `allowDangerousTools: true`。
+- `git-core.mjs` 两份副本：改了插件那份要 `node scripts/sync-git-core.mjs`；`--check` 进 CI/交付自检。
+- `tools/call` 的返回是 `content[].text` 里的 JSON 字符串，测试要按行读 stdio、按 id 配对响应。
+
+## 11. 中文/本地化 stderr 不能用来判定错误类型
+
+- Windows 上 git 的 "nothing to commit" 可能是中文，靠 stderr 正则匹配会漏（实测 `commit(stagedOnly)` 也报成 `git-exit`）。
+- 修法：先用状态命令预检（`git diff --cached --quiet`，exit 0 = 无暂存），再决定是否调用。
+- `errorCodeOf` 里补了 `invalid object name` / `exists on disk, but not in` → `bad-revision`，否则 `show <rev>:<path>` 的错误码会退化成 `git-exit`。

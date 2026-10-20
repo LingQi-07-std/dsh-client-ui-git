@@ -55,17 +55,26 @@ GitFooterEntry (sidebar.footer.action)
 ## 5. 测试
 
 ```powershell
-node test-gitcore.mjs        # git-core 读写全流程（临时仓库）
-node test-host.mjs           # GitGateway 端到端
-node test-contract.mjs       # TYPERT schema 与 mini-zod 双端契约
-node test-install.mjs        # profile 安装校验 + 部署漂移（DSH_PROFILE_DIR）
-node test-client-offline.mjs # 真 bundle 离线渲染：入口/抽屉/提交 diff（迷你 React）
+node test-gitcore.mjs          # git-core 读写全流程（临时仓库）
+node test-gitcore-extended.mjs # diff/staging/log 过滤/show/blame/reflog/tag/分支/软回退/stash/abort/错误码
+node test-mcp-server.mjs       # 真 stdio 起 MCP server：工具清单、危险开关、tools/call
+node test-host.mjs             # GitGateway 端到端
+node test-contract.mjs         # TYPERT schema 与 mini-zod 双端契约
+node test-install.mjs          # profile 安装校验 + 部署漂移（DSH_PROFILE_DIR）
+node test-client-offline.mjs   # 真 bundle 离线渲染：入口/抽屉/提交 diff（迷你 React）
 ```
 
 - 工作区没有真实依赖树：`node_modules/@deepseek-ai` 与 `zod` 是指向 harness/desktop profile 的 junction（`.gitignore` 已排除），换机器要重建。
 - `test-live.mjs` / `test-manual-rpc.mjs` 打真实 GUI 的 `/api/git/*`：端口与认证从 `DSH_WEB_URL` 取（可带 `?token=`），缺省 52493。
 
-## 6. 协作规矩（老师定）
+## 6. MCP 工具（`mcp/server.mjs`）
+
+- 源在仓库 `mcp/server.mjs`，运行副本在 `$DSH_HOME/mcp-git/server.mjs`；**改完必须 `node scripts/sync-mcp.mjs` 再重启 DSH**。
+- `git-core.mjs` 两份副本（插件 + MCP）由 `node scripts/sync-git-core.mjs` 同步，`--check` 校验漂移。
+- 默认 22 个本地工具；`restore` / `reset` 危险工具**默认不注册**，由 `$DSH_HOME/mcp-git/config.json` 的 `allowDangerousTools: true`（或 `DSH_GIT_ALLOW_DANGEROUS=1`）开启 —— 后续设置页只需写这个配置。
+- 联网能力（remote/fetch/pull/push）不在范围内，别顺手加。
+
+## 7. 协作规矩（老师定）
 
 - 任何模块更新都**先开分支**：`fix/…`、`feat/…`。
 - 完成并**经老师确认可用**后才合并回 `main`；未确认不合并。

@@ -46,6 +46,25 @@ const result = await ctx.remote.git.snapshot({ path: "G:/repo" });
 if (result.ok) console.log(result.value.branch);
 ```
 
+## MCP 工具（`mcp/server.mjs`，本地能力，不含联网）
+
+源在仓库 `mcp/server.mjs`，运行副本 `$DSH_HOME/mcp-git/server.mjs`（用 `node scripts/sync-mcp.mjs` 部署，改完重启 DSH）。
+
+| 分组 | 工具 |
+|---|---|
+| 只读 | `snapshot`、`log`（可按 paths/author/since/grep 过滤）、`status`、`diff`（提交 / 工作区 / 暂存区，可限定 paths 或只看 stat）、`show_file`、`branch`、`is_repo`、`blame`、`reflog` |
+| 安全写 | `init`、`commit`（`stagedOnly` 可选）、`add`、`unstage`、`create_branch`、`branch_admin`（rename/delete）、`checkout`、`revert`、`merge`、`reset_soft`（撤销提交保留改动）、`abort`（merge/revert/cherry-pick）、`stash`（push/pop/apply/drop/list/show）、`tag`（list/create/delete） |
+| 危险（默认关闭） | `restore`（丢弃改动）、`reset`（硬回退） |
+
+危险工具默认**不注册**，开启方式（后续设置页就是写这个配置）：
+
+```json
+// $DSH_HOME/mcp-git/config.json
+{ "allowDangerousTools": true }
+```
+
+或临时用环境变量 `DSH_GIT_ALLOW_DANGEROUS=1`。
+
 ## UI
 
 - 挂载点：`sidebar.footer.action`（侧边栏底部，与设置、用量统计同排）
