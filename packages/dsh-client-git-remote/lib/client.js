@@ -99,7 +99,8 @@ window.__ModuleLoader__.load({
 			author: z.string(),
 			email: z.string(),
 			date: z.string(),
-			subject: z.string()
+			subject: z.string(),
+			body: z.string()
 		});
 		const gitLogResult = z.object({ commits: z.array(gitCommit) });
 		const gitStatusResult = z.object({ clean: z.boolean(), entries: z.array(z.object({ x: z.string(), y: z.string(), path: z.string() })) });
@@ -109,7 +110,8 @@ window.__ModuleLoader__.load({
 				path: z.string(),
 				added: z.union([z.number(), z.null()]),
 				removed: z.union([z.number(), z.null()]),
-				binary: z.boolean()
+				binary: z.boolean(),
+				status: z.string()
 			})),
 			patch: z.string(),
 			truncated: z.boolean()
@@ -141,6 +143,7 @@ window.__ModuleLoader__.load({
 		const withTarget = z.object({ path: z.string(), target: z.string() }).passthrough();
 		const withMessage = z.object({ path: z.string(), message: z.string() }).passthrough();
 		const withCommit = z.object({ path: z.string(), commit: z.string() }).passthrough();
+		const withPaths = z.object({ path: z.string(), paths: z.array(z.string()) }).passthrough();
 		const TYPERT_REMOTE = {
 			package: "@dsh-external/dsh-client-git-remote",
 			descriptors: [
@@ -156,6 +159,8 @@ window.__ModuleLoader__.load({
 				descrip("checkout", "GitWriteResult", gitWriteResult, withTarget),
 				descrip("revert", "GitWriteResult", gitWriteResult, withCommit),
 				descrip("merge", "GitMergeResult", gitMergeResult, withTarget),
+				descrip("add", "GitWriteResult", gitWriteResult, withPaths),
+				descrip("unstage", "GitWriteResult", gitWriteResult, withPaths),
 				descrip("restore", "GitWriteResult", gitWriteResult, withCommit),
 				descrip("reset", "GitWriteResult", gitWriteResult, withCommit)
 			]

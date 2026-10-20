@@ -74,3 +74,11 @@
 - Windows 上 git 的 "nothing to commit" 可能是中文，靠 stderr 正则匹配会漏（实测 `commit(stagedOnly)` 也报成 `git-exit`）。
 - 修法：先用状态命令预检（`git diff --cached --quiet`，exit 0 = 无暂存），再决定是否调用。
 - `errorCodeOf` 里补了 `invalid object name` / `exists on disk, but not in` → `bad-revision`，否则 `show <rev>:<path>` 的错误码会退化成 `git-exit`。
+
+## 12. `jsx(type, undefined)` 在 React 18 会直接崩
+
+- 现象：面板文件列表整块报 `Cannot read properties of undefined (reading 'key')`，而入口按钮因为外层没有错误边界一起被摘掉。
+- 原因：`h(WarnDot)` 这种无 props 组件调用，被 shim 原样传给 React 18 的 `jsx`，其内部 `config.key` 没有判空。
+- 修法：shim 里 `props ?? {}`，组件调用统一 `h(Comp, {})`。
+- 教训：离线测试的 mock `jsx` 会自己补 `{}`，所以这类问题**只有真实运行时才暴露**；新增无 props 组件时务必传空对象。
+

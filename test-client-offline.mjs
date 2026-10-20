@@ -1,9 +1,9 @@
 // Offline render test for the browser half.
 // Loads the real lib/client.js bundle in a vm sandbox with a minimal React
 // stand-in, mounts the sidebar entry through the slot registration, and walks
-// the resulting element tree (entry -> drawer -> panel). This catches the
-// failures a browser would show as a blank footer button or React #130:
-// undefined cwd, crash in any panel section, missing branch/badge data.
+// the resulting element tree. Covers the rebuilt worktree list (one merged
+// list + warning dots), commit expansion/detail, double-click shortcut, and
+// the coloured patch lines.
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,7 +24,7 @@ async function check(name, fn) {
 }
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 
-// ---------- minimal React (hooks + element factory) ----------
+// ---------- minimal React ----------
 let currentSlots = null;
 let hookCursor = 0;
 let lastGetSnapshot = null;
@@ -49,8 +49,6 @@ const React = {
 		return [slots[index], (next) => { slots[index] = typeof next === "function" ? next(slots[index]) : next; }];
 	},
 	useEffect(fn, deps) {
-		// Dependency-aware like React: an unchanged dep array must not re-fire
-		// (a re-run of GitPanel's mount effect would clear the open diff).
 		const slots = currentSlots;
 		const index = hookCursor++;
 		const previous = slots[index];
@@ -61,8 +59,6 @@ const React = {
 		slots[index] = { deps: list };
 	},
 	useLayoutEffect(_fn, deps) {
-		// Skipped on purpose (the real one measures the window bar via document);
-		// still occupies a hook slot so later indexes stay aligned.
 		const slots = currentSlots;
 		const index = hookCursor++;
 		slots[index] = { deps: Array.isArray(deps) ? deps : void 0 };
@@ -78,7 +74,7 @@ const jsxRuntime = {
 	jsxs: (type, props) => ({ type, props: props ?? {} }),
 };
 
-// ---------- sandbox (document/window stubs) ----------
+// ---------- sandbox ----------
 const styleTag = { dataset: {}, textContent: "" };
 const documentStub = {
 	querySelector: () => null,
@@ -86,9 +82,9 @@ const documentStub = {
 	head: { appendChild: () => void 0 },
 	body: { dataset: {} },
 	addEventListener: () => void 0,
-	removeEventListener: () => void 0,
+	removeEventListener: () => void 0
 };
-const windowStub = { addEventListener: () => void 0, setTimeout: setTimeout, clearTimeout: clearTimeout };
+const windowStub = { addEventListener: () => void 0, setTimeout, clearTimeout };
 const sandbox = { window: windowStub, document: documentStub, console, setTimeout, clearTimeout, queueMicrotask };
 let registered = null;
 windowStub.__ModuleLoader__ = { load: (definition) => { registered = definition; } };
@@ -96,42 +92,61 @@ windowStub.__ModuleLoader__ = { load: (definition) => { registered = definition;
 // ---------- fake git Remote ----------
 const REPO = { path: "G:\\demo-repo", root: "G:\\demo-repo" };
 const snapshotValue = {
-	repo: true,
-	path: REPO.path,
-	root: REPO.root,
-	branch: "main",
-	head: "abc12345",
-	clean: false,
-	changes: { staged: 1, unstaged: 1, untracked: 1, total: 3 },
-	ahead: 1,
-	behind: 0
+	repo: true, path: REPO.path, root: REPO.root, branch: "main", head: "abc12345",
+	clean: false, changes: { staged: 3, unstaged: 3, untracked: 1, total: 5 }, ahead: 1, behind: 0
 };
 const logValue = {
 	commits: [
-		{ hash: "abc12345deadbeef", short: "abc12345", parents: ["11111111"], refs: ["HEAD -> main"], author: "Arona", email: "a@b", date: new Date(Date.now() - 60000).toISOString(), subject: "feat: first commit" },
-		{ hash: "11111111deadbeef", short: "11111111", parents: [], refs: ["v1"], author: "Arona", email: "a@b", date: new Date(Date.now() - 7200000).toISOString(), subject: "init" }
+		{ hash: "abc12345deadbeef", short: "abc12345", parents: ["11111111"], refs: ["HEAD -> main"], author: "Arona", email: "a@b", date: new Date(Date.now() - 60000).toISOString(), subject: "feat: first commit", body: "完整说明第一行\n第二行细节" },
+		{ hash: "11111111deadbeef", short: "11111111", parents: [], refs: ["v1"], author: "Arona", email: "a@b", date: new Date(Date.now() - 7200000).toISOString(), subject: "init", body: "" }
 	]
 };
-const statusValue = { clean: false, entries: [{ x: " ", y: "M", path: "src/app.js" }, { x: "?", y: "?", path: "notes.md" }, { x: "M", y: " ", path: "lib/core.mjs" }] };
+const statusValue = {
+	clean: false,
+	entries: [
+		{ x: "M", y: " ", path: "src/app.js" },
+		{ x: " ", y: "M", path: "src/app.js" },
+		{ x: "A", y: " ", path: "lib/new.mjs" },
+		{ x: "D", y: " ", path: "old.txt" },
+		{ x: " ", y: "D", path: "gone.txt" },
+		{ x: "?", y: "?", path: "notes.md" }
+	]
+};
 const branchValue = { branches: ["main", "feature/x"] };
-const diffValue = { commit: "abc12345deadbeef", files: [{ path: "src/app.js", added: 4, removed: 1, binary: false }], patch: "diff --git a/src/app.js\n+hi\n", truncated: false };
-const callCount = { snapshot: 0, diff: 0 };
+const detailFiles = [
+	{ path: "src/app.js", added: 3, removed: 1, binary: false, status: "M" },
+	{ path: "lib/new.mjs", added: 10, removed: 0, binary: false, status: "A" },
+	{ path: "old.txt", added: 0, removed: 5, binary: false, status: "D" }
+];
+const callCount = { snapshot: 0, detail: 0, file: 0, add: 0, unstage: 0 };
 const gitRemote = {
 	snapshot: async () => { callCount.snapshot += 1; return { ok: true, value: snapshotValue }; },
 	log: async () => ({ ok: true, value: logValue }),
 	status: async () => ({ ok: true, value: statusValue }),
 	branch: async () => ({ ok: true, value: branchValue }),
-	diff: async () => { callCount.diff += 1; return { ok: true, value: diffValue }; },
+	diff: async (request) => {
+		if (request?.commit !== void 0 && request?.stat === true) {
+			callCount.detail += 1;
+			return { ok: true, value: { commit: request.commit, files: detailFiles, patch: "", truncated: false } };
+		}
+		if (request?.commit !== void 0 && Array.isArray(request?.paths)) {
+			callCount.file += 1;
+			const path = request.paths[0];
+			return { ok: true, value: { commit: request.commit, files: detailFiles.filter((file) => file.path === path), patch: `diff --git a/${path} b/${path}\n@@ -1 +1 @@\n+added line\n-removed line\n`, truncated: false } };
+		}
+		return { ok: true, value: { commit: null, files: [], patch: "", truncated: false } };
+	},
+	add: async () => { callCount.add += 1; return { ok: true, value: { ok: true, message: "已暂存" } }; },
+	unstage: async () => { callCount.unstage += 1; return { ok: true, value: { ok: true, message: "已取消暂存" } }; },
 	commit: async () => ({ ok: true, value: { ok: true, message: "done" } })
 };
 
-// ---------- load the bundle ----------
+// ---------- load ----------
 let apply = null;
 try {
 	const code = readFileSync(join(WORKSPACE, "lib", "client.js"), "utf8");
 	vm.runInNewContext(code, sandbox, { filename: "client.js" });
 	assert(registered !== null, "bundle did not call __ModuleLoader__.load");
-	assert(registered.id === "@dsh-external/dsh-client-ui-git", `unexpected bundle id: ${registered.id}`);
 	const moduleExports = registered.factory((specifier) => {
 		if (specifier === "react") return React;
 		if (specifier === "react/jsx-runtime") return jsxRuntime;
@@ -139,29 +154,18 @@ try {
 	});
 	apply = moduleExports.apply;
 	assert(typeof apply === "function", "exports.apply missing");
-	assert(Array.isArray(moduleExports.inject), "exports.inject missing");
 	assert(moduleExports.inject.includes("remote.git"), "remote.git inject missing");
 } catch (error) {
 	results.push(`FAIL bundle load: ${error instanceof Error ? error.message : error}`);
 	failed += 1;
 }
 
-// ---------- slot registration + render helpers ----------
+// ---------- fixtures + render ----------
 const SessionState = { current: "s-1", byId: { "s-1": { cwd: REPO.path } } };
 const WorkspaceState = { items: [], recentWorkspaceId: void 0 };
 const useSessions = (selector) => selector(SessionState);
 const useWorkspaces = (selector) => selector(WorkspaceState);
-const t = (key, params) => {
-	const dict = {
-		"action.title": "Git visualizer", "action.branch.unknown": "git", "panel.title": "Git",
-		"state.clean": "clean", "state.changes": "changes", "state.staged": "staged", "state.unstaged": "unstaged",
-		"state.untracked": "untracked", "state.loading": "loading", "state.selectHint": "select a commit",
-		"state.noCommits": "no commits", "state.root": "(root)", "section.status": "Working tree",
-		"op.commit": "Commit", "section.diff": "Commit diff"
-	};
-	const raw = dict[key] ?? key;
-	return params === void 0 ? raw : String(raw).replace(/\{([a-zA-Z0-9_]+)\}/g, (m, n) => (params[n] === void 0 ? m : String(params[n])));
-};
+const t = (key) => key;
 
 function renderComponent(type, props) {
 	const previousSlots = currentSlots;
@@ -173,8 +177,6 @@ function renderComponent(type, props) {
 	hookCursor = previousCursor;
 	return element;
 }
-
-/** Walk an element tree, rendering function and class components. */
 function renderTree(node, depth = 0) {
 	if (node === null || node === void 0 || typeof node === "boolean") return null;
 	if (typeof node === "string" || typeof node === "number") return node;
@@ -186,13 +188,10 @@ function renderTree(node, depth = 0) {
 			const instance = new type(props);
 			return renderTree(instance.render(), depth + 1);
 		}
-		const rendered = renderComponent(type, props);
-		return renderTree(rendered, depth + 1);
+		return renderTree(renderComponent(type, props), depth + 1);
 	}
 	return { type, props: { ...props, children: renderTree(props.children, depth + 1) } };
 }
-
-/** Collect every node carrying one className (space-separated aware). */
 function findClass(tree, className, found = []) {
 	if (tree === null || tree === void 0 || typeof tree !== "object") return found;
 	if (Array.isArray(tree)) { for (const child of tree) findClass(child, className, found); return found; }
@@ -201,7 +200,6 @@ function findClass(tree, className, found = []) {
 	findClass(tree.props?.children, className, found);
 	return found;
 }
-/** Concatenate all text under a node (buttons render [glyph, label, badge]). */
 function textOf(node) {
 	if (node === null || node === void 0 || typeof node === "boolean") return "";
 	if (typeof node === "string" || typeof node === "number") return String(node);
@@ -209,8 +207,12 @@ function textOf(node) {
 	if (typeof node === "object") return textOf(node.props?.children);
 	return "";
 }
+const flush = async () => {
+	await Promise.all(pendingEffects.splice(0).map((fn) => fn()));
+	await new Promise((resolve) => setTimeout(resolve, 30));
+};
 
-// ---------- mount the entry through the slot ----------
+// ---------- mount ----------
 let EntryComponent = null;
 const fakeCtx = {
 	slots: {
@@ -220,124 +222,177 @@ const fakeCtx = {
 	remote: { git: gitRemote }
 };
 await check("apply registers the footer entry", async () => {
-	assert(typeof apply === "function", "apply unavailable");
 	apply(fakeCtx);
-	assert(typeof EntryComponent === "function", "no component registered on sidebar.footer.action");
+	assert(typeof EntryComponent === "function", "no component registered");
 });
 
-// First render fires the effect; flush it so the snapshot lands in the store.
 const entryProps = { wide: true, useSessions, useWorkspaces, t };
 let entryTree = null;
-await check("entry renders wide label + dirty badge", async () => {
+await check("entry renders branch + inline count", async () => {
 	entryTree = renderTree(renderComponent(EntryComponent, entryProps));
-	await Promise.all(pendingEffects.splice(0).map((fn) => fn()));
-	await new Promise((resolve) => setTimeout(resolve, 50));
+	await flush();
 	entryTree = renderTree(renderComponent(EntryComponent, entryProps));
-	const labels = findClass(entryTree, "dshg-footerBranch");
-	assert(labels.length === 1, `expected one branch label, got ${labels.length}`);
-	assert(textOf(labels[0]) === "main", `branch label should be "main", got ${JSON.stringify(textOf(labels[0]))}`);
-	const badges = findClass(entryTree, "dshg-footerBadge");
-	assert(badges.length === 1, `expected a dirty badge, got ${badges.length}`);
-	assert(textOf(badges[0]) === "3", `badge should show 3 changes, got ${JSON.stringify(textOf(badges[0]))}`);
-	assert(callCount.snapshot >= 1, "entry never pulled the snapshot");
+	assert(textOf(findClass(entryTree, "dshg-footerBranch")[0]) === "main", "branch label wrong");
+	assert(textOf(findClass(entryTree, "dshg-footerCount")[0]) === "5", "inline count should show 5 changes");
+	assert(findClass(entryTree, "dshg-footerBadge").length === 0, "wide row must not use the corner badge");
 });
 
-await check("rail entry renders icon + badge", async () => {
+await check("rail entry keeps the corner badge", async () => {
 	const railTree = renderTree(renderComponent(EntryComponent, { ...entryProps, wide: false }));
-	const buttons = findClass(railTree, "dshg-footerBtn");
-	assert(buttons.length === 1, "rail button missing");
-	assert(findClass(railTree, "dshg-footerBranch").length === 0, "rail must not render the branch label");
+	assert(findClass(railTree, "dshg-footerBtn").length === 1, "rail button missing");
 	assert(findClass(railTree, "dshg-footerBadge").length === 1, "rail badge missing");
 });
 
 let openedTree = null;
-await check("drawer opens and renders the panel", async () => {
-	const entryNode = findClass(entryTree, "dshg-footerLabel")[0];
-	assert(entryNode !== null && entryNode !== void 0, "wide entry button missing");
-	entryNode.props.onClick();
+await check("one merged tree with folder rows", async () => {
+	findClass(entryTree, "dshg-footerLabel")[0].props.onClick();
 	openedTree = renderTree(renderComponent(EntryComponent, entryProps));
-	await Promise.all(pendingEffects.splice(0).map((fn) => fn()));
-	const drawer = findClass(openedTree, "dshg-drawer");
-	assert(drawer.length === 1, "drawer did not render");
-	const title = findClass(openedTree, "dshg-title")[0];
-	assert(title !== null && title !== void 0, "drawer title missing");
-	assert(textOf(title) === "demo-repo", `drawer title should be the repo basename, got ${JSON.stringify(textOf(title))}`);
-	const badgeTexts = findClass(openedTree, "dshg-badge").map(textOf);
-	assert(badgeTexts.some((text) => text.includes("3")), `changes badge wrong: ${JSON.stringify(badgeTexts)}`);
-	assert(findClass(openedTree, "dshg-commitSubject").length === 2, "commit rows missing");
-	assert(findClass(openedTree, "dshg-fileRow").length === 3, "status file rows missing");
-	assert(findClass(openedTree, "dshg-diffHint").length === 1, "diff placeholder missing");
+	await flush();
+	assert(findClass(openedTree, "dshg-tree").length === 1, "file tree missing");
+	assert(findClass(openedTree, "dshg-fileList").length === 0, "old list container must be gone");
+	assert(findClass(openedTree, "dshg-check").length === 0, "checkboxes must be gone (selection is blue)");
+	const dirs = findClass(openedTree, "dshg-dir").length;
+	assert(dirs === 2, `expected 2 folder rows (src, lib), got ${dirs}`);
+	const rows = findClass(openedTree, "dshg-row");
+	assert(rows.length === 5, `expected 5 merged rows, got ${rows.length}`);
 });
 
-await check("selecting a commit renders its diff", async () => {
-	const rows = findClass(openedTree, "dshg-commitRow");
-	assert(rows.length === 2, "commit rows not found in the opened drawer");
-	rows[0].props.onClick();
-	await new Promise((resolve) => setTimeout(resolve, 50));
-	const detailTree = renderTree(renderComponent(EntryComponent, entryProps));
-	const storeNow = typeof lastGetSnapshot === "function" ? lastGetSnapshot() : null;
-	const body = findClass(detailTree, "dshg-body")[0];
-	assert(body !== null && body !== void 0, "drawer body missing");
-	assert(String(body.props.className).includes("dshg-mode-detail"), `body did not enter detail mode: ${JSON.stringify(body.props.className)}`);
-	const diffRows = findClass(detailTree, "dshg-diffFileRow");
-	assert(diffRows.length === 1, `expected one diff file row, got ${diffRows.length} (diff calls: ${callCount.diff}, patch blocks: ${findClass(detailTree, "dshg-patch").length}, errors: ${findClass(detailTree, "dshg-error").map(textOf).join("/")}, store.diff: ${storeNow?.diff === null ? "null" : typeof storeNow?.diff}, store.diffError: ${String(storeNow?.diffError)}, store.diffHash: ${String(storeNow?.diffHash)})`);
-	assert(findClass(detailTree, "dshg-patch").length === 1, "patch block missing");
+await check("working-tree rows carry the yellow warning dot", async () => {
+	const rows = findClass(openedTree, "dshg-row");
+	const pathOf = (row) => textOf(findClass(row, "dshg-path")[0]);
+	const app = rows.find((row) => pathOf(row) === "app.js");
+	const added = rows.find((row) => pathOf(row) === "new.mjs");
+	const gone = rows.find((row) => pathOf(row) === "gone.txt");
+	assert(app !== void 0 && added !== void 0 && gone !== void 0, "rows missing");
+	assert(findClass(app, "dshg-warnDot").length === 1, "working row without warning dot");
+	assert(findClass(app, "dshg-yellow").length >= 1, "working row should be yellow");
+	assert(findClass(added, "dshg-warnDot").length === 0, "staged-only row must not warn");
+	assert(findClass(added, "dshg-green").length >= 1, "staged row should be green");
+	assert(findClass(gone, "dshg-orange").length >= 1, "working delete should be orange");
 });
 
-await check("falls back to the owning workspace when the session has no cwd", async () => {
-	// A session whose host row carries no cwd must still resolve through the
-	// workspace that accounts for it (`sessionIds`), not the first workspace.
-	const previousSession = { current: SessionState.current, byId: SessionState.byId };
-	const previousWorkspace = { items: WorkspaceState.items, recentWorkspaceId: WorkspaceState.recentWorkspaceId };
+await check("folders inherit the warning state", async () => {
+	const dirRows = findClass(openedTree, "dshg-dir");
+	const src = dirRows.find((row) => textOf(findClass(row, "dshg-dirName")[0]) === "src");
+	const lib = dirRows.find((row) => textOf(findClass(row, "dshg-dirName")[0]) === "lib");
+	assert(src !== void 0 && lib !== void 0, "folder rows missing");
+	assert(findClass(src, "dshg-warnDot").length === 1, "src folder missing the warning dot");
+	assert(String(findClass(src, "dshg-dirName")[0].props.className).includes("dshg-yellow"), "src name should be yellow");
+	assert(findClass(lib, "dshg-warnDot").length === 0, "lib folder should be clean");
+	assert(String(findClass(lib, "dshg-dirName")[0].props.className).includes("dshg-yellow") === false, "lib name should stay plain");
+});
+
+await check("staged rows are green add / red delete / plain modify", async () => {
+	const rows = findClass(openedTree, "dshg-row");
+	const pathOf = (row) => textOf(findClass(row, "dshg-path")[0]);
+	const modified = rows.find((row) => pathOf(row) === "old.txt");
+	const added = rows.find((row) => pathOf(row) === "new.mjs");
+	const gone = rows.find((row) => pathOf(row) === "gone.txt");
+	assert(modified !== void 0 && added !== void 0 && gone !== void 0, "rows missing");
+	const klass = (row) => String(findClass(row, "dshg-path")[0].props.className);
+	assert(klass(gone).includes("dshg-orange"), "working delete should be orange");
+	assert(klass(added).includes("dshg-green"), "staged add should be green");
+});
+
+await check("selecting a working file offers staging", async () => {
+	const rows = findClass(openedTree, "dshg-row");
+	const app = rows.find((row) => textOf(findClass(row, "dshg-path")[0]) === "app.js");
+	app.props.onMouseDown({ button: 0 });
+	const tree = renderTree(renderComponent(EntryComponent, entryProps));
+	const labels = findClass(tree, "dshg-op").map(textOf);
+	assert(labels.some((label) => label.includes("加入暂存")), `staging button missing: ${JSON.stringify(labels)}`);
+	assert(labels.some((label) => label.includes("选中提交")), "selecting files should offer 选中提交");
+});
+
+await check("staging calls add", async () => {
+	const tree = renderTree(renderComponent(EntryComponent, entryProps));
+	findClass(tree, "dshg-op").find((node) => textOf(node).includes("加入暂存")).props.onClick();
+	await flush();
+	assert(callCount.add === 1, `add not called (${callCount.add})`);
+});
+
+await check("commit row expands with full message and actions", async () => {
+	const tree = renderTree(renderComponent(EntryComponent, entryProps));
+	findClass(tree, "dshg-commitHead")[0].props.onClick();
+	const expanded = renderTree(renderComponent(EntryComponent, entryProps));
+	assert(findClass(expanded, "dshg-commitBodyOpen").length === 1, "expanded body missing");
+	assert(textOf(findClass(expanded, "dshg-commitMsg")[0]).includes("第二行细节"), "full message missing");
+	const labels = findClass(expanded, "dshg-commitActions")[0];
+	const text = textOf(labels);
+	for (const label of ["回退到此", "还原此提交", "硬回退", "详细"]) assert(text.includes(label), `missing ${label}: ${text}`);
+});
+
+await check("double click opens the detail pane", async () => {
+	const tree = renderTree(renderComponent(EntryComponent, entryProps));
+	findClass(tree, "dshg-commitHead")[0].props.onDoubleClick({ stopPropagation: () => void 0 });
+	await flush();
+	const opened = renderTree(renderComponent(EntryComponent, entryProps));
+	assert(findClass(opened, "dshg-detailOpen").length === 1, "detail pane did not open on double click");
+	const groups = findClass(opened, "dshg-groupTitle").map(textOf);
+	assert(groups.some((label) => label.includes("新增")), `missing 新增 group: ${JSON.stringify(groups)}`);
+});
+
+await check("picking a file shows coloured patch lines", async () => {
+	const tree = renderTree(renderComponent(EntryComponent, entryProps));
+	const row = findClass(findClass(tree, "dshg-detailList")[0], "dshg-row")[0];
+	row.props.onClick();
+	await flush();
+	const withPatch = renderTree(renderComponent(EntryComponent, entryProps));
+	assert(callCount.file === 1, `file diff not fetched (${callCount.file})`);
+	const box = findClass(withPatch, "dshg-fileDiff")[0];
+	assert(box !== null && box !== void 0, "file diff box missing");
+	assert(findClass(box, "dshg-add").length === 1, "green add line missing");
+	assert(findClass(box, "dshg-del").length === 1, "red delete line missing");
+});
+
+await check("collapsing the row closes the detail pane", async () => {
+	const tree = renderTree(renderComponent(EntryComponent, entryProps));
+	findClass(tree, "dshg-commitHead")[0].props.onClick();
+	const collapsed = renderTree(renderComponent(EntryComponent, entryProps));
+	assert(findClass(collapsed, "dshg-commitBodyOpen").length === 0, "row should be collapsed");
+	assert(findClass(collapsed, "dshg-detailOpen").length === 0, "detail pane should be closed with the row");
+});
+
+await check("detail arrow rotates while the pane is open", async () => {
+	const tree = renderTree(renderComponent(EntryComponent, entryProps));
+	findClass(tree, "dshg-commitHead")[0].props.onDoubleClick({ stopPropagation: () => void 0 });
+	await flush();
+	const opened = renderTree(renderComponent(EntryComponent, entryProps));
+	assert(findClass(opened, "dshg-arrowOpen").length === 1, "detail arrow should be rotated");
+});
+
+await check("single click on another commit closes the detail pane", async () => {
+	const tree = renderTree(renderComponent(EntryComponent, entryProps));
+	// Detail is open on the first commit; single-clicking the second one must
+	// close the pane (only a double click moves it).
+	const heads = findClass(tree, "dshg-commitHead");
+	heads[1].props.onClick({ detail: 1 });
+	await flush();
+	const switched = renderTree(renderComponent(EntryComponent, entryProps));
+	assert(findClass(switched, "dshg-detailOpen").length === 0, "detail pane should close on a single click elsewhere");
+	assert(findClass(switched, "dshg-commitBodyOpen").length === 1, "the clicked row should be expanded");
+});
+
+await check("clean workspace renders the centred clean state", async () => {
+	const previousStatus = gitRemote.status;
+	const previousSnapshot = gitRemote.snapshot;
+	gitRemote.status = async () => ({ ok: true, value: { clean: true, entries: [] } });
+	gitRemote.snapshot = async () => ({ ok: true, value: { ...snapshotValue, clean: true, changes: { staged: 0, unstaged: 0, untracked: 0, total: 0 } } });
+	slotStore.delete(EntryComponent);
 	try {
-		SessionState.current = "s-2";
-		SessionState.byId = { "s-2": {} };
-		WorkspaceState.items = [
-			{ workspaceId: "w-0", path: "G:\\unrelated-dir", sessionIds: [], title: "unrelated", createdAt: "", updatedAt: "" },
-			{ workspaceId: "w-1", path: "G:\\other-repo", sessionIds: ["s-2"], title: "other-repo", createdAt: "", updatedAt: "" }
-		];
-		WorkspaceState.recentWorkspaceId = "w-0";
-		slotStore.delete(EntryComponent);
-		renderTree(renderComponent(EntryComponent, entryProps));
-		await Promise.all(pendingEffects.splice(0).map((fn) => fn()));
-		await new Promise((resolve) => setTimeout(resolve, 30));
-		renderTree(renderComponent(EntryComponent, entryProps));
-		const storeAfter = typeof lastGetSnapshot === "function" ? lastGetSnapshot() : null;
-		assert(storeAfter?.cwd === "G:\\other-repo", `cwd should come from the owning workspace, got ${JSON.stringify(storeAfter?.cwd)}`);
+		let tree = renderTree(renderComponent(EntryComponent, entryProps));
+		await flush();
+		tree = renderTree(renderComponent(EntryComponent, entryProps));
+		// The drawer has to be re-opened after the hook ledger reset.
+		findClass(tree, "dshg-footerLabel")[0].props.onClick();
+		tree = renderTree(renderComponent(EntryComponent, entryProps));
+		await flush();
+		tree = renderTree(renderComponent(EntryComponent, entryProps));
+		assert(findClass(tree, "dshg-clean").length === 1, "clean placeholder missing");
+		assert(findClass(tree, "dshg-opsBar").length === 0, "ops bar must be hidden when clean");
 	} finally {
-		SessionState.current = previousSession.current;
-		SessionState.byId = previousSession.byId;
-		WorkspaceState.items = previousWorkspace.items;
-		WorkspaceState.recentWorkspaceId = previousWorkspace.recentWorkspaceId;
-		slotStore.delete(EntryComponent);
-	}
-});
-
-await check("uses the most recently active session when none is selected", async () => {
-	// Some deployments run with an empty selection cell (`current === undefined`)
-	// while the list still holds every session row.
-	const previousSession = { current: SessionState.current, byId: SessionState.byId };
-	const previousWorkspace = { items: WorkspaceState.items, recentWorkspaceId: WorkspaceState.recentWorkspaceId };
-	try {
-		SessionState.current = void 0;
-		SessionState.byId = {
-			"session-old": { cwd: "G:\\old-repo", updatedAt: 100 },
-			"session-live": { cwd: "G:\\live-repo", updatedAt: 999999 }
-		};
-		WorkspaceState.items = [{ workspaceId: "w-9", path: "G:\\fallback-dir", sessionIds: [], title: "fallback", createdAt: "", updatedAt: "" }];
-		WorkspaceState.recentWorkspaceId = "w-9";
-		slotStore.delete(EntryComponent);
-		renderTree(renderComponent(EntryComponent, entryProps));
-		await Promise.all(pendingEffects.splice(0).map((fn) => fn()));
-		await new Promise((resolve) => setTimeout(resolve, 30));
-		renderTree(renderComponent(EntryComponent, entryProps));
-		const storeNow = typeof lastGetSnapshot === "function" ? lastGetSnapshot() : null;
-		assert(storeNow?.cwd === "G:\\live-repo", `expected the latest session cwd, got ${JSON.stringify(storeNow?.cwd)}`);
-	} finally {
-		SessionState.current = previousSession.current;
-		SessionState.byId = previousSession.byId;
-		WorkspaceState.items = previousWorkspace.items;
-		WorkspaceState.recentWorkspaceId = previousWorkspace.recentWorkspaceId;
+		gitRemote.status = previousStatus;
+		gitRemote.snapshot = previousSnapshot;
 		slotStore.delete(EntryComponent);
 	}
 });

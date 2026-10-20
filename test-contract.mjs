@@ -67,7 +67,7 @@ try {
 	check("manifest face/package", () => {
 		if (manifest.face !== "host") throw new Error("face != host");
 		if (manifest.package !== "@dsh-external/dsh-client-ui-git") throw new Error("package mismatch");
-		if (!Array.isArray(manifest.invocations) || manifest.invocations.length !== 14) throw new Error("expected 14 invocations, got " + manifest.invocations?.length);
+		if (!Array.isArray(manifest.invocations) || manifest.invocations.length !== 16) throw new Error("expected 16 invocations, got " + manifest.invocations?.length);
 		if (!Array.isArray(manifest.schemas)) throw new Error("schemas must be array");
 		if (typeof manifest.model !== "object" || !Array.isArray(manifest.model.services)) throw new Error("model malformed");
 	});
@@ -116,9 +116,9 @@ try {
 		z.object({ repo: z.literal(false), path: z.string() }),
 		z.object({ repo: z.literal(true), path: z.string(), root: z.string(), branch: z.string(), head: z.union([z.string(), z.null()]), clean: z.boolean(), changes: z.object({ staged: z.number(), unstaged: z.number(), untracked: z.number(), total: z.number() }), ahead: z.number(), behind: z.number() })
 	]);
-	const mzLog = z.object({ commits: z.array(z.object({ hash: z.string(), short: z.string(), parents: z.array(z.string()), refs: z.array(z.string()), author: z.string(), email: z.string(), date: z.string(), subject: z.string() })) });
+	const mzLog = z.object({ commits: z.array(z.object({ hash: z.string(), short: z.string(), parents: z.array(z.string()), refs: z.array(z.string()), author: z.string(), email: z.string(), date: z.string(), subject: z.string(), body: z.string() })) });
 	const mzStatus = z.object({ clean: z.boolean(), entries: z.array(z.object({ x: z.string(), y: z.string(), path: z.string() })) });
-	const mzDiff = z.object({ commit: z.string(), files: z.array(z.object({ path: z.string(), added: z.union([z.number(), z.null()]), removed: z.union([z.number(), z.null()]), binary: z.boolean() })), patch: z.string(), truncated: z.boolean() });
+	const mzDiff = z.object({ commit: z.string(), files: z.array(z.object({ path: z.string(), added: z.union([z.number(), z.null()]), removed: z.union([z.number(), z.null()]), binary: z.boolean(), status: z.string() })), patch: z.string(), truncated: z.boolean() });
 
 	check("mini-zod request passthrough", () => {
 		const d = mzRequest.parse({ path: dir, limit: 3 });
@@ -174,7 +174,7 @@ try {
 	check("git-remote bundle embeds mount", () => {
 		if (!remoteSource.includes("$mount")) throw new Error("missing $mount");
 		const marshalCalls = (remoteSource.match(/descrip\("/g) ?? []).length;
-		if (marshalCalls !== 14) throw new Error("expected 14 descriptors, got " + marshalCalls);
+		if (marshalCalls !== 16) throw new Error("expected 16 descriptors, got " + marshalCalls);
 		if (!remoteSource.includes('package: "@dsh-external/dsh-client-git-remote"')) throw new Error("missing package id");
 	});
 
