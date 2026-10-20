@@ -284,6 +284,35 @@ await check("selecting a commit renders its diff", async () => {
 	assert(findClass(detailTree, "dshg-patch").length === 1, "patch block missing");
 });
 
+await check("falls back to the owning workspace when the session has no cwd", async () => {
+	// A session whose host row carries no cwd must still resolve through the
+	// workspace that accounts for it (`sessionIds`), not the first workspace.
+	const previousSession = { current: SessionState.current, byId: SessionState.byId };
+	const previousWorkspace = { items: WorkspaceState.items, recentWorkspaceId: WorkspaceState.recentWorkspaceId };
+	try {
+		SessionState.current = "s-2";
+		SessionState.byId = { "s-2": {} };
+		WorkspaceState.items = [
+			{ workspaceId: "w-0", path: "G:\\unrelated-dir", sessionIds: [], title: "unrelated", createdAt: "", updatedAt: "" },
+			{ workspaceId: "w-1", path: "G:\\other-repo", sessionIds: ["s-2"], title: "other-repo", createdAt: "", updatedAt: "" }
+		];
+		WorkspaceState.recentWorkspaceId = "w-0";
+		slotStore.delete(EntryComponent);
+		renderTree(renderComponent(EntryComponent, entryProps));
+		await Promise.all(pendingEffects.splice(0).map((fn) => fn()));
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		renderTree(renderComponent(EntryComponent, entryProps));
+		const storeAfter = typeof lastGetSnapshot === "function" ? lastGetSnapshot() : null;
+		assert(storeAfter?.cwd === "G:\\other-repo", `cwd should come from the owning workspace, got ${JSON.stringify(storeAfter?.cwd)}`);
+	} finally {
+		SessionState.current = previousSession.current;
+		SessionState.byId = previousSession.byId;
+		WorkspaceState.items = previousWorkspace.items;
+		WorkspaceState.recentWorkspaceId = previousWorkspace.recentWorkspaceId;
+		slotStore.delete(EntryComponent);
+	}
+});
+
 console.log(results.join("\n"));
 process.exitCode = failed > 0 ? 1 : 0;
 console.log(process.exitCode === 1 ? "\nSOME CLIENT RENDER CHECKS FAILED" : "\nALL CLIENT RENDER CHECKS PASSED");
