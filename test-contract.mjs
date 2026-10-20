@@ -170,7 +170,7 @@ try {
 		if (!clientSource.includes("sidebar.footer.action")) throw new Error("missing slot registration");
 		if (clientSource.includes("$mount")) throw new Error("mount must live in git-remote, not ui");
 	});
-	const remoteSource = readFileSync(new URL("../git-remote/lib/client.js", import.meta.url), "utf8");
+	const remoteSource = readFileSync(new URL("./packages/dsh-client-git-remote/lib/client.js", import.meta.url), "utf8");
 	check("git-remote bundle embeds mount", () => {
 		if (!remoteSource.includes("$mount")) throw new Error("missing $mount");
 		const marshalCalls = (remoteSource.match(/descrip\("/g) ?? []).length;

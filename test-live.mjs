@@ -4,12 +4,20 @@
 // failure here is a candidate for the client crash.
 import { readFileSync } from "node:fs";
 
-const PORT = 56120; // adjust if dsh restarted
-const path = "G:\\DSH-PERSONALIZE";
+// 端口每次重启都会变：从 DSH_WEB_URL 取（可带 GUI 地址栏里的 ?token=…），
+// 再不行用当前 GUI 的默认端口。用法：node test-live.mjs [仓库目录]
+const BASE_URL = process.env.DSH_WEB_URL ?? "http://127.0.0.1:52493";
+const path = process.argv[2] ?? process.cwd();
 
 async function rpc(method, request) {
 	const body = JSON.stringify({ type: "client-request", rpcId: "diag-" + Math.random().toString(36).slice(2), method: "git/" + method, payload: { args: { request } } });
-	const res = await fetch(`http://127.0.0.1:${PORT}/api/git/${method}`, { method: "POST", headers: { "content-type": "application/json" }, body });
+	const base = new URL(BASE_URL);
+	const url = new URL(`/api/git/${method}`, base);
+	url.search = base.search; // 带上 GUI URL 里的认证 query
+	const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body });
+	if (res.status === 401) {
+		throw new Error("HTTP 401：需要认证。把 GUI 地址栏里的完整 URL（含 ?token=…）赋给 DSH_WEB_URL 再跑。");
+	}
 	return res.json();
 }
 
