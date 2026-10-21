@@ -85,7 +85,20 @@ const documentStub = {
 	removeEventListener: () => void 0
 };
 const windowStub = { addEventListener: () => void 0, setTimeout, clearTimeout };
-const sandbox = { window: windowStub, document: documentStub, console, setTimeout, clearTimeout, queueMicrotask };
+// Prism (inlined) probes DOM globals at load time; give the sandbox harmless stubs.
+class ElementStub {}
+class NodeStub {}
+const sandbox = {
+	window: windowStub,
+	document: documentStub,
+	console,
+	setTimeout,
+	clearTimeout,
+	queueMicrotask,
+	Element: ElementStub,
+	HTMLElement: ElementStub,
+	Node: NodeStub
+};
 let registered = null;
 windowStub.__ModuleLoader__ = { load: (definition) => { registered = definition; } };
 
@@ -297,7 +310,7 @@ await check("staged rows are green add / red delete / plain modify", async () =>
 await check("selecting a working file offers staging", async () => {
 	const rows = findClass(openedTree, "dshg-row");
 	const app = rows.find((row) => textOf(findClass(row, "dshg-path")[0]) === "app.js");
-	app.props.onMouseDown({ button: 0 });
+	app.props.onMouseDown({ button: 2 });
 	const tree = renderTree(renderComponent(EntryComponent, entryProps));
 	const labels = findClass(tree, "dshg-op").map(textOf);
 	assert(labels.some((label) => label.includes("加入暂存")), `staging button missing: ${JSON.stringify(labels)}`);
@@ -313,7 +326,9 @@ await check("staging calls add", async () => {
 
 await check("commit row expands with full message and actions", async () => {
 	const tree = renderTree(renderComponent(EntryComponent, entryProps));
-	findClass(tree, "dshg-commit")[0].props.onClick({ detail: 1 });
+	findClass(tree, "dshg-commit")[0].props.onMouseDown({ button: 0, detail: 1, target: null });
+	// A single press is delayed (140ms) so a double press can cancel it.
+	await new Promise((resolve) => setTimeout(resolve, 240));
 	const expanded = renderTree(renderComponent(EntryComponent, entryProps));
 	assert(findClass(expanded, "dshg-commitBodyOpen").length === 1, "expanded body missing");
 	assert(textOf(findClass(expanded, "dshg-commitMsg")[0]).includes("第二行细节"), "full message missing");
@@ -324,7 +339,7 @@ await check("commit row expands with full message and actions", async () => {
 
 await check("double click opens the detail pane", async () => {
 	const tree = renderTree(renderComponent(EntryComponent, entryProps));
-	findClass(tree, "dshg-commit")[0].props.onDoubleClick({ stopPropagation: () => void 0 });
+	findClass(tree, "dshg-commit")[0].props.onMouseDown({ button: 0, detail: 2, target: null });
 	await flush();
 	const opened = renderTree(renderComponent(EntryComponent, entryProps));
 	assert(findClass(opened, "dshg-detailOpen").length === 1, "detail pane did not open on double click");
@@ -343,11 +358,16 @@ await check("picking a file shows coloured patch lines", async () => {
 	assert(box !== null && box !== void 0, "file diff box missing");
 	assert(findClass(box, "dshg-add").length === 1, "green add line missing");
 	assert(findClass(box, "dshg-del").length === 1, "red delete line missing");
+	const patchText = textOf(box);
+	assert(!patchText.includes("diff --git"), "git plumbing header must be hidden");
+	assert(!patchText.includes("index 0000"), "index line must be hidden");
+	assert(patchText.includes("行附近"), "hunk header should read as a human hint");
 });
 
 await check("collapsing the row closes the detail pane", async () => {
 	const tree = renderTree(renderComponent(EntryComponent, entryProps));
-	findClass(tree, "dshg-commit")[0].props.onClick({ detail: 1 });
+	findClass(tree, "dshg-commit")[0].props.onMouseDown({ button: 0, detail: 1, target: null });
+	await new Promise((resolve) => setTimeout(resolve, 240));
 	const collapsed = renderTree(renderComponent(EntryComponent, entryProps));
 	assert(findClass(collapsed, "dshg-commitBodyOpen").length === 0, "row should be collapsed");
 	assert(findClass(collapsed, "dshg-detailOpen").length === 0, "detail pane should be closed with the row");
@@ -355,7 +375,7 @@ await check("collapsing the row closes the detail pane", async () => {
 
 await check("detail button flips its label while the pane is open", async () => {
 	const tree = renderTree(renderComponent(EntryComponent, entryProps));
-	findClass(tree, "dshg-commit")[0].props.onDoubleClick({ stopPropagation: () => void 0 });
+	findClass(tree, "dshg-commit")[0].props.onMouseDown({ button: 0, detail: 2, target: null });
 	await flush();
 	const opened = renderTree(renderComponent(EntryComponent, entryProps));
 	const labels = findClass(opened, "dshg-opDetail").map(textOf);
@@ -367,8 +387,8 @@ await check("single click on another commit closes the detail pane", async () =>
 	// Detail is open on the first commit; single-clicking the second one must
 	// close the pane (only a double click moves it).
 	const heads = findClass(tree, "dshg-commit");
-	heads[1].props.onClick({ detail: 1 });
-	await flush();
+	heads[1].props.onMouseDown({ button: 0, detail: 1, target: null });
+	await new Promise((resolve) => setTimeout(resolve, 240));
 	const switched = renderTree(renderComponent(EntryComponent, entryProps));
 	assert(findClass(switched, "dshg-detailOpen").length === 0, "detail pane should close on a single click elsewhere");
 	assert(findClass(switched, "dshg-commitBodyOpen").length === 1, "the clicked row should be expanded");
@@ -379,7 +399,7 @@ await check("the first commit cannot open the detail pane", async () => {
 	const commits = findClass(tree, "dshg-commit");
 	const first = commits[commits.length - 1];
 	assert(first !== void 0, "commit rows missing");
-	first.props.onDoubleClick({ stopPropagation: () => void 0 });
+	first.props.onMouseDown({ button: 0, detail: 2, target: null });
 	await flush();
 	const after = renderTree(renderComponent(EntryComponent, entryProps));
 	assert(findClass(after, "dshg-detailOpen").length === 0, "the first commit must not open the pane");
