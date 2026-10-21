@@ -82,3 +82,19 @@
 - 修法：shim 里 `props ?? {}`，组件调用统一 `h(Comp, {})`。
 - 教训：离线测试的 mock `jsx` 会自己补 `{}`，所以这类问题**只有真实运行时才暴露**；新增无 props 组件时务必传空对象。
 
+## 13. 侧栏插件拿不到「当前会话」——改从 DOM 读选中行
+
+- 现象：切到已有对话后 Git 面板不跟随，只有新建对话（新会话成为最新）才跟随。
+- 真实 feed 结构（本部署实测）：`sessions` 是 `{ ids, byId, phase, projectionsBySession }`，**没有 `current`、没有 `items`**；`byId[id]` 有 `cwd/updatedAt/blank/title`。
+- 注入了也救不了：`useSessionAccess` 在 footer slot 里 source 为 absent（selector 收到 `undefined`）；`usePanelInfo` 只有 `activePanelId`；`useSessionStatus` 是空对象。
+- **可行方案**：直接读侧栏 DOM 的选中行
+  ```js
+  document.querySelector('[data-row-key^="session:"][aria-selected="true"]')
+  // data-row-key = "session:<sessionId>"，去掉 "session:" 前缀再去 byId 查 cwd
+  ```
+  用 `MutationObserver`（`attributeFilter: ["aria-selected", "data-row-key"]` + `childList`）跟踪切换。
+- 保底顺序：DOM 选中行 → `recentWorkspaceId` → `list.current` → `ids[0]` / 最新 `updatedAt` → 会话所属工作区。
+- 注意：`recentWorkspaceId` 在 `byId` 为空时会让 DSH 算不出来，**不要**回退到 `items[0]`（会钉死在非仓库工作区）。
+- 诊断条默认关闭，由 `window.__dshGitDev.set(true)` 打开（`localStorage["dsh-git-dev-mode"]`），留给将来的设置面板。
+
+

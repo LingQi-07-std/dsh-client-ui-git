@@ -313,18 +313,18 @@ await check("staging calls add", async () => {
 
 await check("commit row expands with full message and actions", async () => {
 	const tree = renderTree(renderComponent(EntryComponent, entryProps));
-	findClass(tree, "dshg-commitHead")[0].props.onClick();
+	findClass(tree, "dshg-commit")[0].props.onClick({ detail: 1 });
 	const expanded = renderTree(renderComponent(EntryComponent, entryProps));
 	assert(findClass(expanded, "dshg-commitBodyOpen").length === 1, "expanded body missing");
 	assert(textOf(findClass(expanded, "dshg-commitMsg")[0]).includes("第二行细节"), "full message missing");
 	const labels = findClass(expanded, "dshg-commitActions")[0];
 	const text = textOf(labels);
-	for (const label of ["回退到此", "还原此提交", "硬回退", "详细"]) assert(text.includes(label), `missing ${label}: ${text}`);
+	for (const label of ["回退到此", "还原提交", "强制回退", "展开详细"]) assert(text.includes(label), `missing ${label}: ${text}`);
 });
 
 await check("double click opens the detail pane", async () => {
 	const tree = renderTree(renderComponent(EntryComponent, entryProps));
-	findClass(tree, "dshg-commitHead")[0].props.onDoubleClick({ stopPropagation: () => void 0 });
+	findClass(tree, "dshg-commit")[0].props.onDoubleClick({ stopPropagation: () => void 0 });
 	await flush();
 	const opened = renderTree(renderComponent(EntryComponent, entryProps));
 	assert(findClass(opened, "dshg-detailOpen").length === 1, "detail pane did not open on double click");
@@ -347,30 +347,42 @@ await check("picking a file shows coloured patch lines", async () => {
 
 await check("collapsing the row closes the detail pane", async () => {
 	const tree = renderTree(renderComponent(EntryComponent, entryProps));
-	findClass(tree, "dshg-commitHead")[0].props.onClick();
+	findClass(tree, "dshg-commit")[0].props.onClick({ detail: 1 });
 	const collapsed = renderTree(renderComponent(EntryComponent, entryProps));
 	assert(findClass(collapsed, "dshg-commitBodyOpen").length === 0, "row should be collapsed");
 	assert(findClass(collapsed, "dshg-detailOpen").length === 0, "detail pane should be closed with the row");
 });
 
-await check("detail arrow rotates while the pane is open", async () => {
+await check("detail button flips its label while the pane is open", async () => {
 	const tree = renderTree(renderComponent(EntryComponent, entryProps));
-	findClass(tree, "dshg-commitHead")[0].props.onDoubleClick({ stopPropagation: () => void 0 });
+	findClass(tree, "dshg-commit")[0].props.onDoubleClick({ stopPropagation: () => void 0 });
 	await flush();
 	const opened = renderTree(renderComponent(EntryComponent, entryProps));
-	assert(findClass(opened, "dshg-arrowOpen").length === 1, "detail arrow should be rotated");
+	const labels = findClass(opened, "dshg-opDetail").map(textOf);
+	assert(labels.some((label) => label.includes("收起详细")), `expected 收起详细, got ${JSON.stringify(labels)}`);
 });
 
 await check("single click on another commit closes the detail pane", async () => {
 	const tree = renderTree(renderComponent(EntryComponent, entryProps));
 	// Detail is open on the first commit; single-clicking the second one must
 	// close the pane (only a double click moves it).
-	const heads = findClass(tree, "dshg-commitHead");
+	const heads = findClass(tree, "dshg-commit");
 	heads[1].props.onClick({ detail: 1 });
 	await flush();
 	const switched = renderTree(renderComponent(EntryComponent, entryProps));
 	assert(findClass(switched, "dshg-detailOpen").length === 0, "detail pane should close on a single click elsewhere");
 	assert(findClass(switched, "dshg-commitBodyOpen").length === 1, "the clicked row should be expanded");
+});
+
+await check("the first commit cannot open the detail pane", async () => {
+	const tree = renderTree(renderComponent(EntryComponent, entryProps));
+	const commits = findClass(tree, "dshg-commit");
+	const first = commits[commits.length - 1];
+	assert(first !== void 0, "commit rows missing");
+	first.props.onDoubleClick({ stopPropagation: () => void 0 });
+	await flush();
+	const after = renderTree(renderComponent(EntryComponent, entryProps));
+	assert(findClass(after, "dshg-detailOpen").length === 0, "the first commit must not open the pane");
 });
 
 await check("clean workspace renders the centred clean state", async () => {
@@ -395,6 +407,89 @@ await check("clean workspace renders the centred clean state", async () => {
 		gitRemote.snapshot = previousSnapshot;
 		slotStore.delete(EntryComponent);
 	}
+});
+
+await check("follows the active workspace when no session is selected", async () => {
+	const prevCurrent = SessionState.current;
+	const prevById = SessionState.byId;
+	const prevItems = WorkspaceState.items;
+	const prevRecent = WorkspaceState.recentWorkspaceId;
+	SessionState.current = void 0;
+	SessionState.byId = {};
+	WorkspaceState.items = [
+		{ workspaceId: "w1", path: "G:\\ws-one", sessionIds: [] },
+		{ workspaceId: "w2", path: "G:\\ws-two", sessionIds: [] }
+	];
+	WorkspaceState.recentWorkspaceId = "w1";
+	slotStore.delete(EntryComponent);
+	try {
+		let tree = renderTree(renderComponent(EntryComponent, entryProps));
+		await flush();
+		const titleOf = () => String(findClass(tree, "dshg-footerLabel")[0].props.title);
+		assert(titleOf().includes("ws-one"), `expected ws-one, got ${titleOf()}`);
+		// Switching the workspace only moves `recentWorkspaceId`.
+		WorkspaceState.recentWorkspaceId = "w2";
+		tree = renderTree(renderComponent(EntryComponent, entryProps));
+		await flush();
+		tree = renderTree(renderComponent(EntryComponent, entryProps));
+		assert(titleOf().includes("ws-two"), `expected ws-two after switch, got ${titleOf()}`);
+	} finally {
+		SessionState.current = prevCurrent;
+		SessionState.byId = prevById;
+		WorkspaceState.items = prevItems;
+		WorkspaceState.recentWorkspaceId = prevRecent;
+		slotStore.delete(EntryComponent);
+	}
+});
+
+await check("tracks the DOM-selected conversation id", async () => {
+	const prevById = SessionState.byId;
+	const prevCurrent = SessionState.current;
+	const prevQuery = documentStub.querySelector;
+	const prevItems = WorkspaceState.items;
+	const prevRecent = WorkspaceState.recentWorkspaceId;
+	SessionState.byId = { "session-test-1234": { cwd: "G:\\ws-dom", updatedAt: 1 } };
+	SessionState.current = void 0;
+	WorkspaceState.items = [];
+	WorkspaceState.recentWorkspaceId = void 0;
+	documentStub.querySelector = (selector) => (selector.includes("data-row-key")
+		? { getAttribute: (name) => (name === "data-row-key" ? "session:session-test-1234" : null) }
+		: null);
+	slotStore.delete(EntryComponent);
+	try {
+		let tree = renderTree(renderComponent(EntryComponent, entryProps));
+		await flush();
+		tree = renderTree(renderComponent(EntryComponent, entryProps));
+		await flush();
+		tree = renderTree(renderComponent(EntryComponent, entryProps));
+		const title = String(findClass(tree, "dshg-footerLabel")[0].props.title);
+		assert(title.includes("ws-dom"), `expected the DOM-selected cwd, got ${title}`);
+	} finally {
+		SessionState.byId = prevById;
+		SessionState.current = prevCurrent;
+		WorkspaceState.items = prevItems;
+		WorkspaceState.recentWorkspaceId = prevRecent;
+		documentStub.querySelector = prevQuery;
+		slotStore.delete(EntryComponent);
+	}
+});
+
+await check("dev diagnostics stay hidden until the switch is flipped", async () => {
+	slotStore.delete(EntryComponent);
+	let tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	assert(findClass(tree, "dshg-diag").length === 0, "diag must not render while closed");
+	findClass(tree, "dshg-footerLabel")[0].props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	assert(findClass(tree, "dshg-diag").length === 0, "diag strip must be hidden by default");
+	const dev = windowStub.__dshGitDev;
+	assert(dev !== void 0 && typeof dev.set === "function", "window.__dshGitDev.set must be exposed");
+	dev.set(true);
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	assert(findClass(tree, "dshg-diag").length === 1, "diag strip should appear in dev mode");
+	dev.set(false);
 });
 
 console.log(results.join("\n"));
