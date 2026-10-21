@@ -1,7 +1,7 @@
 // End-to-end test of git-core write set: init -> commit -> branch/checkout ->
 // revert -> merge -> restore, plus read queries. Uses a scratch repo.
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, readdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readdirSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as git from "./lib/git-core.mjs";
@@ -79,6 +79,16 @@ try {
 		check("restore: command ok", () => { if (!rrs.ok) throw new Error(rrs.error); });
 		const rd1 = await git.status(rdir);
 		check("restore: clean after", () => { if (!rd1.clean) throw new Error("not clean: " + JSON.stringify(rd1.entries)); });
+		// Untracked directories must be expanded to individual files (`-uall`),
+		// otherwise the panel gets one `dir/` entry with an empty file name.
+		mkdirSync(join(rdir, "nested", "deep"), { recursive: true });
+		writeFileSync(join(rdir, "nested", "deep", "file.txt"), "x\n");
+		const rd2 = await git.status(rdir);
+		const paths = rd2.entries.map((entry) => entry.path);
+		check("status: untracked dir is expanded to files", () => {
+			if (!paths.includes("nested/deep/file.txt")) throw new Error("expected nested file, got " + JSON.stringify(paths));
+			if (paths.some((path) => path.endsWith("/"))) throw new Error("directory entry leaked: " + JSON.stringify(paths));
+		});
 	} finally {
 		try { rmSync(rdir, { recursive: true, force: true }); } catch { /* ignore */ }
 	}
