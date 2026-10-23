@@ -137,6 +137,7 @@ const gitRemote = {
 	log: async () => ({ ok: true, value: logValue }),
 	status: async () => ({ ok: true, value: statusValue }),
 	branch: async () => ({ ok: true, value: branchValue }),
+	reflogEvents: async () => ({ ok: true, value: { ok: true, events: [] } }),
 	diff: async (request) => {
 		if (request?.commit !== void 0 && request?.stat === true) {
 			callCount.detail += 1;

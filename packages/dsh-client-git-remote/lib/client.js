@@ -117,6 +117,16 @@ window.__ModuleLoader__.load({
 			truncated: z.boolean()
 		});
 		const gitBranchResult = z.object({ branches: z.array(z.string()) });
+		const gitReflogEvent = z.object({
+			ref: z.string(),
+			oldHash: z.string(),
+			newHash: z.string(),
+			actor: z.string(),
+			date: z.string(),
+			message: z.string(),
+			action: z.string()
+		});
+		const gitReflogResult = z.object({ ok: z.boolean(), events: z.array(gitReflogEvent).optional(), error: z.string().optional() });
 		const gitIsRepoResult = z.object({ repo: z.boolean(), error: z.string().optional() });
 		const gitWriteResult = z.union([
 			z.object({ ok: z.literal(true), message: z.string(), id: z.string().optional() }),
@@ -152,6 +162,7 @@ window.__ModuleLoader__.load({
 				descrip("status", "GitStatusResult", gitStatusResult),
 				descrip("diff", "GitDiffResult", gitDiffResult, withCommit),
 				descrip("branch", "GitBranchResult", gitBranchResult),
+				descrip("reflogEvents", "GitReflogResult", gitReflogResult),
 				descrip("createBranch", "GitWriteResult", gitWriteResult),
 				descrip("isRepo", "GitIsRepoResult", gitIsRepoResult),
 				descrip("init", "GitWriteResult", gitWriteResult),
