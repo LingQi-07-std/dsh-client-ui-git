@@ -37,11 +37,12 @@ GitFooterEntry → useSessions 取 cwd
 - 双端 schema 都会被真实 `parse()`：**Host 侧对请求参数严格 decode**（`codec.create().parse`），客户端侧只组装 args、不 parse 请求；请求 schema 必须覆盖面板真实传的字段。
 - `engines.dsh` 用 `>=0.2.0-rc.2 <0.3.0`。
 
-## 4. 部署（三步，缺一不可）
+## 4. 部署（四步，缺一不可）
 
-1. 工作区 → `G:\DSHDesktopPluginRemove\_stage\pkgs\dsh-client-ui-git`（robocopy `/E`）
-2. `_stage` → `C:\Users\13953\.dsh\profiles\desktop\node_modules\@dsh-external\dsh-client-ui-git`
-3. `node test-install.mjs` 校验逐文件 SHA256
+1. UI 包：工作区 → `G:\DSHDesktopPluginRemove\_stage\pkgs\dsh-client-ui-git`（robocopy `/E`）
+2. **独立 remote 包：工作区 `packages\dsh-client-git-remote` → `_stage\pkgs\dsh-client-git-remote`**（漏了这一步，面板调用新方法会报 `ctx.remote.git[method] is not a function`）
+3. `_stage` 的两个包 → `C:\Users\13953\.dsh\profiles\desktop\node_modules\@dsh-external\` 下各自目录
+4. `node test-install.mjs` 校验逐文件 SHA256，并抽查 remote bundle 的 `descrip` 数量与 `lib/client.js` 哈希
 
 **host 半（git-core / index / typert / remote）改动必须重启 DSH**；只改 `lib/client.js` 刷新即可。
 `git-core.mjs` 有 MCP 副本：`node scripts/sync-git-core.mjs`（`--check` 查漂移）。

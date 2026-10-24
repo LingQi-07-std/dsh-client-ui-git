@@ -78,8 +78,9 @@
 
 - 改模块**先开分支**，确认可用后再合并回 main。
 - 交付时说明：改了哪些文件、怎么验证、是否需要重启。
-- 部署三步：工作区 → `_stage\pkgs\...` → `profiles\desktop\node_modules\@dsh-external\...`，然后 `node test-install.mjs`。
+- 部署**四步**（详见 AGENTS.md）：UI 包与独立的 `dsh-client-git-remote` 包都要各走一遍 工作区 → `_stage` → `profiles\desktop\node_modules\@dsh-external\`，然后 `node test-install.mjs`。只同步 UI 包会让面板报 `ctx.remote.git[method] is not a function`。
 - **host 半（git-core / index / typert / remote）改动必须重启 DSH**；只改 `lib/client.js` 刷新页面即可。
+- 本轮的部署盲区已记录在 MEMORY 第 13 节。
 
 ## 6. 测试
 

@@ -79,3 +79,11 @@
 - 「已合并进当前 HEAD」用 `git for-each-ref --merged=HEAD`，不要自己数祖先。
 - 删除前预览游离提交：`git rev-list <branch> --not <其余所有 ref>`；删除后它们只在 reflog 保留期内可恢复。
 - 分支创建记录只有 `checkout -b` 会写 `branch: Created from X`；`git branch x` 的记录可能是 `Created from HEAD`，UI 要能接受 "HEAD"。
+
+## 13. 部署漏 remote 包 → `ctx.remote.git[method] is not a function`（2026-10-24）
+
+- 症状：重启 DSH 后仍报某方法不是函数；host manifest（26 条）和 gateway（26 个）都对，但面板拿到的 `ctx.remote.git` 只有 17 个方法。
+- 根因：`dsh-client-git-remote` 是独立包，部署三步只同步了 `dsh-client-ui-git`；`_stage\pkgs\dsh-client-git-remote` 还停在 10/20 的 16 条旧版，profile 里是 17 条。
+- 诊断：数三处 `descrip("` 数量（工作区 `packages/` / `_stage\pkgs\` / profile `node_modules\@dsh-external\`），并比对 `lib/client.js` 哈希。
+- 修复：remote 包也要走 工作区 → `_stage` → profile 两段 robocopy，然后重启 DSH。
+- 推而广之：任何「独立 client 插件包」都有同样的部署要求，`test-install.mjs` 之后要抽查它的 descriptor 数和文件哈希。
