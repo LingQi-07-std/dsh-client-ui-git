@@ -84,7 +84,17 @@ const documentStub = {
 	addEventListener: () => void 0,
 	removeEventListener: () => void 0
 };
-const windowStub = { addEventListener: () => void 0, setTimeout, clearTimeout };
+const localStore = new Map();
+const windowStub = {
+	addEventListener: () => void 0,
+	setTimeout,
+	clearTimeout,
+	localStorage: {
+		getItem: (key) => (localStore.has(key) ? localStore.get(key) : null),
+		setItem: (key, value) => { localStore.set(key, String(value)); },
+		removeItem: (key) => { localStore.delete(key); }
+	}
+};
 // Prism (inlined) probes DOM globals at load time; give the sandbox harmless stubs.
 class ElementStub {}
 class NodeStub {}
@@ -142,7 +152,7 @@ const gitRemote = {
 		ok: true,
 		value: {
 			branches: [
-				{ name: "main", hash: "abc12345deadbeef", short: "abc12345", upstream: "", date: new Date(Date.now() - 60000).toISOString(), subject: "feat: first commit", current: true, merged: true, created: null },
+				{ name: "main", hash: "abc12345deadbeef", short: "abc12345", upstream: "", date: new Date(Date.now() - 60000).toISOString(), subject: "feat: first commit", current: true, merged: true, created: { date: new Date(Date.now() - 172800000).toISOString(), from: "仓库初始", hash: "abc12345deadbeef" } },
 				{ name: "feature/x", hash: "22222222deadbeef", short: "22222222", upstream: "", date: new Date(Date.now() - 3600000).toISOString(), subject: "feature work", current: false, merged: false, created: { date: new Date(Date.now() - 86400000).toISOString(), from: "main", hash: "22222222deadbeef" } }
 			]
 		}
@@ -169,8 +179,17 @@ const gitRemote = {
 	},
 	add: async () => { callCount.add += 1; return { ok: true, value: { ok: true, message: "已暂存" } }; },
 	unstage: async () => { callCount.unstage += 1; return { ok: true, value: { ok: true, message: "已取消暂存" } }; },
-	commit: async () => ({ ok: true, value: { ok: true, message: "done" } })
+	commit: async () => ({ ok: true, value: { ok: true, message: "done" } }),
+	readPluginState: async (request) => ({
+		ok: true,
+		value: { ok: true, value: pluginState.has(request?.key) ? pluginState.get(request.key) : "null" }
+	}),
+	writePluginState: async (request) => {
+		pluginState.set(request?.key, String(request?.value ?? "null"));
+		return { ok: true, value: { ok: true } };
+	}
 };
+const pluginState = new Map();
 
 // ---------- load ----------
 let apply = null;
@@ -331,13 +350,14 @@ await check("selecting a working file offers staging", async () => {
 	app.props.onMouseDown({ button: 2 });
 	const tree = renderTree(renderComponent(EntryComponent, entryProps));
 	const labels = findClass(tree, "dshg-op").map(textOf);
-	assert(labels.some((label) => label.includes("加入暂存")), `staging button missing: ${JSON.stringify(labels)}`);
+	assert(labels.some((label) => label.includes("选中暂存")), `staging button missing: ${JSON.stringify(labels)}`);
 	assert(labels.some((label) => label.includes("选中提交")), "selecting files should offer 选中提交");
+	assert(labels.some((label) => label.includes("选中回退")), "selecting files should offer 选中回退");
 });
 
 await check("staging calls add", async () => {
 	const tree = renderTree(renderComponent(EntryComponent, entryProps));
-	findClass(tree, "dshg-op").find((node) => textOf(node).includes("加入暂存")).props.onClick();
+	findClass(tree, "dshg-op").find((node) => textOf(node).includes("选中暂存")).props.onClick();
 	await flush();
 	assert(callCount.add === 1, `add not called (${callCount.add})`);
 });
@@ -352,7 +372,7 @@ await check("commit row expands with full message and actions", async () => {
 	assert(textOf(findClass(expanded, "dshg-commitMsg")[0]).includes("第二行细节"), "full message missing");
 	const labels = findClass(expanded, "dshg-commitActions")[0];
 	const text = textOf(labels);
-	for (const label of ["回退到此", "还原提交", "强制回退", "展开详细"]) assert(text.includes(label), `missing ${label}: ${text}`);
+	for (const label of ["检出提交", "还原提交", "强制回退", "展开详细"]) assert(text.includes(label), `missing ${label}: ${text}`);
 });
 
 await check("double click opens the detail pane", async () => {
@@ -441,8 +461,14 @@ await check("clean workspace renders the centred clean state", async () => {
 		assert(findClass(tree, "dshg-clean").length === 1, "clean placeholder missing");
 		const opsBar = findClass(tree, "dshg-opsBar");
 		assert(opsBar.length === 1, "branch / more must stay reachable on a clean workspace");
-		const buttons = findClass(opsBar[0], "dshg-op");
-		assert(buttons.length === 2, `clean bar should only offer branch + more, got ${buttons.length}`);
+		const left = findClass(opsBar[0], "dshg-opsLeft")[0];
+		assert(left !== void 0, "the fixed action group is missing");
+		const direct = left.props.children.filter((node) => node !== null && node !== void 0 && node.type === "button");
+		assert(direct.length === 4, `clean bar should offer 4 fixed actions, got ${direct.length}`);
+		assert(findClass(opsBar[0], "dshg-opIcon").some((button) => button.props.title === "回收站"), "the recycle-bin entry must stay reachable");
+		const labels = direct.map(textOf);
+		assert(labels[0] === "全部提交" && labels[1] === "全部暂存" && labels[2] === "回退修改" && labels[3] === "全部撤销", `fixed buttons missing: ${JSON.stringify(labels)}`);
+		assert(direct[0].props.disabled === true && direct[1].props.disabled === true && direct[2].props.disabled === true && direct[3].props.disabled === true, "fixed buttons must be disabled on a clean tree");
 	} finally {
 		gitRemote.status = previousStatus;
 		gitRemote.snapshot = previousSnapshot;
@@ -571,14 +597,111 @@ await check("branch popover lists branches and expands creation info", async () 
 	assert(branchButton !== void 0, "branch tool button missing");
 	branchButton.props.onClick();
 	tree = renderTree(renderComponent(EntryComponent, entryProps));
-	assert(findClass(tree, "dshg-pop").length === 1, "branch popover missing");
+	const pops = findClass(tree, "dshg-pop").filter((node) => !String(node.props.className).includes("dshg-morePop"));
+	assert(pops.length === 1, `branch popover missing (${pops.length})`);
 	assert(findClass(tree, "dshg-bBranch").length === 2, "branch rows missing");
 	const heads = findClass(tree, "dshg-bHead");
 	heads[1].props.onClick();
 	tree = renderTree(renderComponent(EntryComponent, entryProps));
-	const body = findClass(tree, "dshg-bBody");
+	const body = findClass(tree, "dshg-bBodyOpen");
 	assert(body.length === 1, "expanded branch body missing");
 	assert(textOf(body[0]).includes("基于 main"), "creation source missing");
+	// The primary branch must not show a creation card at all.
+	heads[0].props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	const mainBody = findClass(tree, "dshg-bBodyOpen");
+	assert(mainBody.length === 1, "primary branch body missing");
+	assert(!textOf(mainBody[0]).includes("创建节点"), "primary branch must not show a creation card");
+});
+
+await check("branch dot filters the timeline and keeps at least one branch", async () => {
+	slotStore.delete(EntryComponent);
+	let tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	findClass(tree, "dshg-footerLabel")[0].props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	const branchButton = findClass(tree, "dshg-opIcon").find((button) => button.props.title === "分支");
+	branchButton.props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	assert(findClass(tree, "dshg-bDot").length === 2, "branch dots missing");
+	// All branches selected by default: the full graph shows.
+	assert(findClass(tree, "dshg-commit").length === 2, "all branches should show every commit");
+	assert(findClass(tree, "dshg-branchArrow").length === 2, "branch tip arrows missing");
+	// Toggle main off -> only feature/x stays; its tip is not in the log.
+	findClass(tree, "dshg-bDot")[0].props.onClick({ stopPropagation() {} });
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	assert(findClass(tree, "dshg-commit").length === 0, "filter should hide unrelated commits");
+	assert(findClass(tree, "dshg-branchArrow").length === 0, "branch tip arrows must follow the filter");
+	// The last selected branch cannot be cleared.
+	const remaining = findClass(tree, "dshg-bDot").find((dot) => dot.props["aria-pressed"] === true);
+	assert(remaining !== void 0, "one branch must stay selected");
+	remaining.props.onClick({ stopPropagation() {} });
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	assert(findClass(tree, "dshg-commit").length === 0, "the last selected branch must not be cleared");
+	// Selecting main again restores the whole graph.
+	findClass(tree, "dshg-bDot")[0].props.onClick({ stopPropagation() {} });
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	assert(findClass(tree, "dshg-commit").length === 2, "selecting every branch restores the full graph");
+});
+
+await check("branch filter survives closing and reopening the panel", async () => {
+	// Leave only feature/x selected, then simulate closing the drawer.
+	slotStore.delete(EntryComponent);
+	let tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	findClass(tree, "dshg-footerLabel")[0].props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	const branchButton = findClass(tree, "dshg-opIcon").find((button) => button.props.title === "分支");
+	branchButton.props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	findClass(tree, "dshg-bDot")[0].props.onClick({ stopPropagation() {} });
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	assert(findClass(tree, "dshg-commit").length === 0, "filter should apply before reopening");
+	// Reopen from a fresh mount: the stored selection must be restored.
+	slotStore.delete(EntryComponent);
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	findClass(tree, "dshg-footerLabel")[0].props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	assert(findClass(tree, "dshg-commit").length === 0, "filter must survive closing the panel");
+	// Restore the default (all branches) for later checks.
+	branchButton.props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	findClass(tree, "dshg-bDot")[0].props.onClick({ stopPropagation() {} });
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	assert(findClass(tree, "dshg-commit").length === 2, "selecting the last branch restores the graph");
+});
+
+await check("branch reset reflog rows are not rendered as creation cards", async () => {
+	const previous = gitRemote.reflogEvents;
+	gitRemote.reflogEvents = async () => ({
+		ok: true,
+		value: {
+			ok: true,
+			events: [
+				{ ref: "refs/heads/main", oldHash: "a".repeat(40), newHash: "abc12345deadbeef", actor: "Arona <a@b>", date: new Date().toISOString(), message: "branch: Reset to e960a43", action: "branch" }
+			]
+		}
+	});
+	slotStore.delete(EntryComponent);
+	try {
+		let tree = renderTree(renderComponent(EntryComponent, entryProps));
+		await flush();
+		findClass(tree, "dshg-footerLabel")[0].props.onClick();
+		tree = renderTree(renderComponent(EntryComponent, entryProps));
+		await flush();
+		tree = renderTree(renderComponent(EntryComponent, entryProps));
+		assert(findClass(tree, "dshg-eventRow").length === 0, "reset records must not render a branch card");
+	} finally {
+		gitRemote.reflogEvents = previous;
+		slotStore.delete(EntryComponent);
+	}
 });
 
 await check("dev diagnostics stay hidden until the switch is flipped", async () => {

@@ -189,6 +189,13 @@ window.__ModuleLoader__.load({
 		const gitOrphanResult = z.object({ ok: z.boolean(), commits: z.array(gitOrphanCommit), error: z.string().optional() });
 		const gitExclusiveCommit = z.object({ hash: z.string(), short: z.string(), subject: z.string() });
 		const gitExclusiveResult = z.object({ ok: z.boolean(), commits: z.array(gitExclusiveCommit), error: z.string().optional() });
+		const gitPluginStateResult = z.object({ ok: z.boolean(), value: z.string().optional(), error: z.string().optional() });
+		const gitReflogBackupResult = z.union([
+			z.object({ ok: z.literal(true), added: z.number(), total: z.number() }),
+			z.object({ ok: z.literal(false), error: z.string() })
+		]);
+		const gitReflogBackupReadResult = z.object({ ok: z.boolean(), events: z.array(z.any()), error: z.string().optional() });
+		const gitReflogBackupConfigResult = z.object({ ok: z.boolean(), enabled: z.boolean(), total: z.number(), error: z.string().optional() });
 		//#endregion
 
 		const PKG = "@dsh-external/dsh-client-ui-git";
@@ -239,7 +246,12 @@ window.__ModuleLoader__.load({
 				descrip("operationContinue", "GitWriteResult", gitWriteResult, withKind),
 				descrip("operationAbort", "GitWriteResult", gitWriteResult, withKind),
 				descrip("restore", "GitWriteResult", gitWriteResult, withOptionalPaths),
-				descrip("reset", "GitWriteResult", gitWriteResult, withCommit)
+				descrip("reset", "GitWriteResult", gitWriteResult, withCommit),
+				descrip("readPluginState", "GitPluginStateResult", gitPluginStateResult, z.object({ path: z.string(), key: z.string() }).passthrough()),
+				descrip("writePluginState", "GitPluginStateResult", gitPluginStateResult, z.object({ path: z.string(), key: z.string(), value: z.string().optional() }).passthrough()),
+				descrip("reflogBackup", "GitReflogBackupResult", gitReflogBackupResult),
+				descrip("reflogBackupRead", "GitReflogBackupReadResult", gitReflogBackupReadResult),
+				descrip("reflogBackupConfig", "GitReflogBackupConfigResult", gitReflogBackupConfigResult, z.object({ path: z.string(), enabled: z.boolean().optional() }).passthrough())
 			]
 		};
 		//#endregion

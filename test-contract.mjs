@@ -68,7 +68,7 @@ try {
 	check("manifest face/package", () => {
 		if (manifest.face !== "host") throw new Error("face != host");
 		if (manifest.package !== "@dsh-external/dsh-client-ui-git") throw new Error("package mismatch");
-		if (!Array.isArray(manifest.invocations) || manifest.invocations.length !== 26) throw new Error("expected 26 invocations, got " + manifest.invocations?.length);
+		if (!Array.isArray(manifest.invocations) || manifest.invocations.length !== 31) throw new Error("expected 31 invocations, got " + manifest.invocations?.length);
 		if (!Array.isArray(manifest.schemas)) throw new Error("schemas must be array");
 		if (typeof manifest.model !== "object" || !Array.isArray(manifest.model.services)) throw new Error("model malformed");
 	});
@@ -254,7 +254,7 @@ try {
 	check("git-remote bundle embeds mount", () => {
 		if (!remoteSource.includes("$mount")) throw new Error("missing $mount");
 		const marshalCalls = (remoteSource.match(/descrip\("/g) ?? []).length;
-		if (marshalCalls !== 26) throw new Error("expected 26 descriptors, got " + marshalCalls);
+		if (marshalCalls !== 31) throw new Error("expected 31 descriptors, got " + marshalCalls);
 		if (!remoteSource.includes('package: "@dsh-external/dsh-client-git-remote"')) throw new Error("missing package id");
 	});
 

@@ -211,6 +211,33 @@ try {
 		if (side.created === null || side.created.from !== "main") throw new Error("creation record missing: " + JSON.stringify(side.created));
 		if (!/^[0-9a-f]{8}$/.test(side.short)) throw new Error("short hash missing");
 		if (out.branches[0].name !== "main") throw new Error("current branch must sort first");
+		if (main.created === null || main.created.from !== "仓库初始") throw new Error("primary branch should fall back to the root commit: " + JSON.stringify(main.created));
+	});
+
+	await checkAsync("branchDetails orders newer branches before older ones", async () => {
+		await git.createBranch(m, "newer");
+		const out = await git.branchDetails(m);
+		const names = out.branches.map((branch) => branch.name);
+		if (names[0] !== "main") throw new Error("current first: " + names.join(","));
+		const newerAt = names.indexOf("newer");
+		const sideAt = names.indexOf("side");
+		if (newerAt < 0 || sideAt < 0 || newerAt > sideAt) throw new Error("newest should come before older: " + names.join(","));
+		await git.deleteBranch(m, "newer");
+	});
+
+	await checkAsync("branch -f reflog rows are not creation events", async () => {
+		const rb = makeRepo("reflogbranch");
+		writeFileSync(join(rb, "f.txt"), "v1\n");
+		await git.commit(rb, "first");
+		writeFileSync(join(rb, "f.txt"), "v2\n");
+		await git.commit(rb, "second");
+		await git.createBranch(rb, "topic");
+		sh(rb, "branch", "-f", "topic", "HEAD~1");
+		const out = await git.reflogEvents(rb);
+		const resetRow = out.events.find((event) => /Reset to/i.test(event.message));
+		if (resetRow !== void 0) throw new Error("branch -f must not become a timeline event: " + resetRow.message);
+		const created = out.events.find((event) => /branch: Created from/i.test(event.message));
+		if (created === void 0) throw new Error("real creation record missing");
 	});
 
 	await checkAsync("merge ff-only refuses diverged branches with not-fast-forward", async () => {

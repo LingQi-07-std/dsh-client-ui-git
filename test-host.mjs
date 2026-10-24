@@ -57,6 +57,34 @@ try {
 	if (notRepo.repo !== false) throw new Error("non-repo snapshot should report repo=false");
 	if (!Array.isArray(notRepoLog.commits) || notRepoLog.commits.length !== 0) throw new Error("non-repo log should be empty");
 	if (notRepoStatus.clean !== true || notRepoStatus.entries.length !== 0) throw new Error("non-repo status should be clean/empty");
+	// Plugin-local persistence: data goes to the plugin dir, never the workspace.
+	process.env.DSH_GIT_STATE_DIR = join(dir, ".dsh-state");
+	const readEmpty = await gateway.readPluginState({ key: "prefs" });
+	if (!readEmpty.ok || readEmpty.value !== "null") throw new Error("empty state should be null: " + JSON.stringify(readEmpty));
+	const writeState = await gateway.writePluginState({ key: "prefs", value: JSON.stringify({ branches: ["main"], n: 1 }) });
+	if (!writeState.ok) throw new Error("writePluginState failed: " + JSON.stringify(writeState));
+	const readBack = await gateway.readPluginState({ key: "prefs" });
+	if (readBack.value !== JSON.stringify({ branches: ["main"], n: 1 })) throw new Error("state round-trip failed: " + readBack.value);
+	let rejected = false;
+	try {
+		await gateway.writePluginState({ key: "prefs", value: "{broken" });
+	} catch (error) {
+		rejected = true;
+	}
+	if (rejected !== true) throw new Error("invalid JSON should be rejected");
+	const afterReject = await gateway.readPluginState({ key: "prefs" });
+	if (afterReject.value !== JSON.stringify({ branches: ["main"], n: 1 })) throw new Error("state must survive a rejected write");
+	// Reflog backup: opt-in snapshot of history-shaping reflog rows.
+	sh("branch", "backup-probe");
+	const backup = await gateway.reflogBackup({ path: dir });
+	if (!backup.ok || backup.total < 1) throw new Error("reflogBackup failed: " + JSON.stringify(backup));
+	const backupAgain = await gateway.reflogBackup({ path: dir });
+	if (!backupAgain.ok || backupAgain.added !== 0) throw new Error("reflogBackup should be idempotent: " + JSON.stringify(backupAgain));
+	const config = await gateway.reflogBackupConfig({ path: dir, enabled: true });
+	if (!config.ok || config.enabled !== true) throw new Error("reflogBackupConfig failed: " + JSON.stringify(config));
+	const storedEvents = await gateway.reflogBackupRead({ path: dir });
+	if (!storedEvents.ok || storedEvents.events.length < 1) throw new Error("reflogBackupRead failed");
+	delete process.env.DSH_GIT_STATE_DIR;
 	console.log("\nALL HOST CHECKS PASSED");
 } finally {
 	rmSync(dir, { recursive: true, force: true });

@@ -87,3 +87,17 @@
 - 诊断：数三处 `descrip("` 数量（工作区 `packages/` / `_stage\pkgs\` / profile `node_modules\@dsh-external\`），并比对 `lib/client.js` 哈希。
 - 修复：remote 包也要走 工作区 → `_stage` → profile 两段 robocopy，然后重启 DSH。
 - 推而广之：任何「独立 client 插件包」都有同样的部署要求，`test-install.mjs` 之后要抽查它的 descriptor 数和文件哈希。
+
+## 14. reflog 的 `branch:` 不全是创建（2026-10-24）
+
+- `git branch -f main <hash>` 写 `branch: Reset to <hash>`；`git branch -m` 写 `branch: renamed refs/heads/a to refs/heads/b`；还有 `branch: Set upstream ...`。
+- 旧过滤只匹配 `branch:` 前缀，把 `branch: Reset to` 当成创建事件，时间线上冒出假的「创建分支 main · 基于（未知）」卡片。
+- 修复：core 的 KEEP 收紧为 `branch: Created from`；client 侧也校验 message 含 `Created from`（兼容已缓存的旧数据）。
+- 创建事件只活在 reflog（默认 90 天，不是 30 天），过期后轴线卡片无法恢复；要永久保留只能插件侧另存。
+
+## 15. 插件内持久化（`.data`）
+
+- 数据目录 = 插件安装根下的 `.data/state.json`（`lib/state.mjs`），host 侧读写，客户端经 `readPluginState` / `writePluginState` 访问。
+- 为什么不在 localStorage：卸载插件后浏览器里仍有残留、不同浏览器/工作区不统一；为什么不在工作区：会污染仓库。
+- 写入用临时文件 + rename，写操作串行排队；失败不污染队列。
+- 测试用 `DSH_GIT_STATE_DIR` 指向临时目录，避免测试数据写进插件目录。
