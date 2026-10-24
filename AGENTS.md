@@ -1,7 +1,7 @@
 # AGENTS.md — dsh-client-ui-git
 
 DSH Web GUI 的 Git 可视化插件（侧栏入口 + 抽屉面板）。纯 JS 无构建。
-**动手前先读 `HANDOFF.md`**（当前进度/待办）与 `MEMORY.md`（踩坑）。
+**动手前先读 `MEMORY.md`（踩坑）与第 7 节「当前进度与待办」。**
 
 ## 1. 结构
 
@@ -66,3 +66,38 @@ node test-client-offline.mjs # 真 bundle 离线渲染
 - 改模块**先开分支**（`fix/…`、`feat/…`），确认可用后才合并 main。
 - 交付报告：改了哪些文件、验证结果、是否需重启。
 - 改源码只用 read/edit/write 工具，禁用 PowerShell 文本管道（会写坏 UTF-8）。
+
+## 7. 当前进度与待办
+
+设计文稿：`docs/branch-management-design.md`；冲突气泡原型：`shots/mockup-conflict.html`。
+
+### 7.1 已完成（2026-10-24，分支 `feat/branch-management`）
+
+- 分支浮层（`BranchPopover`）：本地分支列表、最后提交时间、切换、展开最后提交 + 创建信息（可跳时间线节点）、重命名（左下）、删除（含彻底删除与游离预览）、合并（三种方式）。
+- 合并：`merge(dir, target, {mode})` 支持 `ff-only` / `no-ff` / `squash`；squash 成功后自动 commit。
+- 冲突流程：`repoOperation` 探测 + `ConflictBanner` + 冲突文件树 + `ConflictView`（标记行着色）+ 继续/中止；冲突块归零显示「（解决）」，继续时统一 add；状态在 `.git`，重开面板自动恢复。
+- 回收站：`orphanedCommits` + 更多菜单；游离 HEAD 徽标。
+- 宿主方法 17 → 26；remote 包 26 条 descriptor；测试全绿。
+
+### 7.2 关键实现位置
+
+| 想改什么 | 去哪 |
+|---|---|
+| 分支 / 冲突 / 游离 git 逻辑 | `lib/git-core.mjs` 末尾「branch management / merge-conflict state」段 |
+| 新方法契约 | `lib/typert.host.js` 的 `reqShaped` / invocations；remote 包 `descrip` |
+| 分支浮层 | `lib/client.js` 的 `BranchPopover` |
+| 冲突气泡 / 列表 / 详情 | `ConflictBanner` / `ConflictTree` / `ConflictView` |
+| 回收站 | `RecycleBin` + `refreshOrphans` |
+| 弹窗分支 | `ActionModal` 的 `deleteBranch / renameBranch / merge / abortOperation / recoverCommit` |
+| 工作区点击分发 | `openPreview`（冲突文件 → 冲突详情，普通文件 → workDiff） |
+| 样式 | `lib/client.js` css 数组末尾新段 |
+
+### 7.3 待办
+
+1. **stash**（下一个功能）：core 已有 `stashAction`，UI 未接，建议放「更多」菜单。
+2. 远程分支展示：`branchDetails` 已返回 `upstream`，浮层暂不显示。
+3. 冲突状态自动刷新：目前靠手动/操作后刷新，想做到编辑器保存后自动更新需要轮询或文件监听。
+4. 侧栏入口的冲突红点提示。
+5. 分支浮层的「已删除分支」分组。
+6. 快速合并的预检（分叉时提前禁用），目前靠 git 返回 `not-fast-forward`。
+7. `PANEL_VERSION` 仍为 0.1.4，未随本次功能升版。
