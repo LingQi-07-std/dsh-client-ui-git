@@ -8,11 +8,12 @@ DSH Web GUI 的 Git 可视化插件（侧栏入口 + 抽屉面板）。纯 JS �
 | 路径 | 职责 |
 |---|---|
 | `lib/git-core.mjs` | 纯函数 git 层（spawn / 解析 / 读写）；另有 MCP 同步副本 |
-| `lib/index.js` | host 半 `GitGateway`，17 个方法 |
-| `lib/typert.host.js` | 手写 TYPERT manifest（strict zod + `create()`） |
-| `lib/client.js` | 浏览器 bundle：store、入口、抽屉、i18n、CSS（单文件，无构建） |
-| `packages/dsh-client-git-remote/` | 独立 client 插件：`ctx.remote.$mount()` 挂 `git` namespace |
+| `lib/index.js` | host 半 `GitGateway`，26 个方法（含分支管理 / 冲突状态 / 游离提交） |
+| `lib/typert.host.js` | 手写 TYPERT manifest（strict zod + `create()`），26 条 invocation |
+| `lib/client.js` | 浏览器 bundle：store、入口、抽屉、分支浮层、冲突气泡、回收站、CSS（单文件） |
+| `packages/dsh-client-git-remote/` | 独立 client 插件：`ctx.remote.$mount()` 挂 `git` namespace（26 条 descriptor） |
 | `cordis.patch.yml` | bundle 层 insert |
+| `docs/` | 设计文稿（分支管理与合并冲突：`branch-management-design.md`） |
 
 ## 2. 链路
 
@@ -33,7 +34,7 @@ GitFooterEntry → useSessions 取 cwd
 - `exports.inject` 必须含 `["slots", "locale", "remote", "remote.git"]`。
 - client 半不得 `require` 其他 Harness Client 包；图标内联。
 - `jsx/jsxs` 不保证可用，顶部有 `createElement` shim；无 props 组件传 `{}`。
-- 双端 schema 都会被真实 `parse()`：请求 `.passthrough()`，结果字段必须完整。
+- 双端 schema 都会被真实 `parse()`：**Host 侧对请求参数严格 decode**（`codec.create().parse`），客户端侧只组装 args、不 parse 请求；请求 schema 必须覆盖面板真实传的字段。
 - `engines.dsh` 用 `>=0.2.0-rc.2 <0.3.0`。
 
 ## 4. 部署（三步，缺一不可）

@@ -1,67 +1,78 @@
 # HANDOFF — 交接给下一个对话
 
-最后更新：2026-10-24，对应提交 `010c2d8 添加reflog引入，更新git轴样式与卡片类型`。
+最后更新：2026-10-24，分支 `feat/branch-management`（本轮功能完成，待合并 main）。
 
 ## 1. 项目是什么
 
 `G:\DSH Plugins\dsh-client-ui-git` —— DSH Web GUI 的 Git 可视化插件（侧栏入口 + 抽屉面板）。
 纯 JS 无构建：host 半（`lib/git-core.mjs` / `lib/index.js` / `lib/typert.host.js`）+ 浏览器 bundle（`lib/client.js`）+ 独立 remote 包（`packages/dsh-client-git-remote/`）。
 
-## 2. 本轮做了什么（已完成并提交）
+设计文稿：`docs/branch-management-design.md`（冲突气泡原型：`shots/mockup-conflict.html` / `.png`）。
 
-### 2.1 reflog 引入（host 侧）
+## 2. 本轮做了什么（分支管理 + 合并冲突）
 
-- `git-core.mjs` 新增 `reflogEvents(dir)`：**直接读 `.git/logs/HEAD` 和 `.git/logs/refs/heads/**`（递归）**，不 spawn git、无行数上限。
-- 过滤规则：只保留 `branch:` / `merge` / `reset:` / `rebase` / `cherry-pick` / `clone:` / `pull`；**checkout 被刻意排除**（每次切分支都记，噪声大）。
-- 两条额外过滤：`oldHash === newHash` 的空操作全部丢弃（`reset: moving to HEAD`、`merge x: updating HEAD`）；按 `旧hash|新hash|时间戳|消息` 去重（HEAD 与分支 reflog 会重复记同一次操作）。
-- 返回字段：`ref / oldHash / newHash / actor / date / message / action`，按时间倒序。
-- host 接线：`lib/index.js` 加 `reflogEvents` 方法，`lib/typert.host.js` 加 `GitReflogResult` schema，remote 包加对应 `descrip`。**invocation 数 16 → 17**，三个测试的硬编码已同步。
+### 2.1 host 契约：17 → 26 个方法
 
-### 2.2 单轴设计（前端）
+`lib/git-core.mjs` 新增：
 
-- 放弃双轴（多样式轨道）设计：存档在分支 **`archive/dual-track`**（commit `f16f92f`，含 `RAIL_CASES`/`assignLanes`/九种样式 demo）。
-- 现在的 `lib/client.js` 回到**单轴**：`.dshg-commit::before` 一条竖线 + 提交点。
-- `reflogEvents` 与 `log` **并行请求**（`Promise.all`），都到齐再渲染。
+| 函数 | 作用 |
+|---|---|
+| `branchDetails(dir)` | 本地分支详情：tip、最后提交、上游、是否已合并、reflog 里的创建记录 |
+| `repoOperation(dir)` | 探测进行中操作（merge / squash / revert / cherry-pick / rebase）+ 冲突文件、每个文件的冲突块数、已 add 的已解决文件 |
+| `conflictFile(dir, file)` | 冲突文件的工作区原文 + 索引三阶段（base / ours / theirs） |
+| `orphanedCommits(dir)` | 回收站：reflog 出现过、`rev-list --all` 不可达、对象仍存在的提交 |
+| `branchExclusiveCommits(dir, name)` | 删除分支前预览：只有该分支可达的提交 |
+| `operationContinue(dir, kind)` | merge/revert/cherry-pick `--continue`；squash 用 `commit --no-edit` |
+| `merge(dir, target, {mode})` | 扩展 `ff-only` / `no-ff` / `squash`（squash 成功后自动 commit） |
+| `abortOperation` | 扩展 `rebase`，新增 `squash`（`reset --hard HEAD`，因为没有 MERGE_HEAD） |
 
-### 2.3 事件卡片
+`lib/index.js` / `lib/typert.host.js` / remote 包同步：新增 `branchDetails`、`branchExclusiveCommits`、`repoOperation`、`conflictFile`、`orphanedCommits`、`deleteBranch`、`renameBranch`、`operationContinue`、`operationAbort` 九条 invocation。
+顺手修了两个契约 bug：`restore` 的请求 schema 不再要求 `commit`；`commit` 现在尊重请求里的 `stagedOnly`。
 
-- **创建分支卡片**（`BranchEventRow`）：绿点（点内 `+`）+ 两行文本。
-  - 行1：`创建分支 <分支名>`（分支名着色）
-  - 行2：`基于 <源分支>（<创建时提交短hash>） <源分支>分支 · <操作人> · <时间>`
-- **快进合并卡片**（`MergeEventRow`）：黄点（点内 `⇄`），**不可展开**。
-  - 行1：`快进合并 <源分支> → <目标分支>`
-  - 行2：`<旧hash> → <新hash> · <操作人> · <时间>`
-- **真正的合并提交**：就是 commit 行本身（有合并提交），可展开/双击；`meta` 行显示 `合并 <源分支> → <目标分支>`；点内画 SVG 图标（左竖线 + 右斜线汇入）。
-- 事件点/提交点尺寸：事件点 **14px**，普通提交点 **10px**，合并提交点 **14px**。
-- 图标颜色自适应：`branchIconColor()` 按分支色亮度选深色/白色图标。
-- 分支色：`branchColor(name)` = `hsl(hash(name) % 360, 62%, 52%)`，同一分支的点/箭头/胶囊/名字一致。
+### 2.2 client 工具条
 
-### 2.4 其他细节
+- 去掉「新建分支 / 切换分支 / 合并分支」三个按钮；右侧固定「分支」（BranchGlyph）+「更多」（四个空心方块 `MoreIcon`）。
+- 分支浮层（`BranchPopover`）：列出本地分支（色点 / 名称 / 未合并标记 / 最后提交时间 / 切换按钮）；点行展开最后提交与创建信息（可跳到时间线节点）；左下「重命名」，右下「切换 / 删除 / 合并」；顶部「新建分支」。
+- 删除弹窗（`ActionModal` kind `deleteBranch`）：已合并走 `-d`；未合并展示 `branchExclusiveCommits` 预览 + 彻底删除 `-D`；当前分支禁用。
+- 合并弹窗（kind `merge`）：左上角切「快速 / 三方 / 摘取」，目标分支排除来源，默认当前分支；目标不是当前分支时先 checkout 再 merge。
+- 冲突期间分支浮层锁定：切换 / 删除 / 重命名 / 合并禁用，只留查看与新建。
 
-- 分支尖端提交：点左侧有**彩色三角箭头**（`dshg-branchArrow`，`left:-8px`，timeline `padding-left:28px` 防裁剪）。
-- 分支名胶囊：有分支色底色，**展开提交时才显示**（`dshg-refsShow`），`max-width:180px`。
-- 展开/收起动画：标题换行 + 胶囊用 `max-height` 裁剪过渡，不在动画中途撑开/收缩。
-- 最新一行的点贴顶（`.dshg-timeline > :first-child .dshg-nodeWrap{top:4px}`）。
-- 亮色模式分支名加淡阴影、暗色模式加 1.2px 白色描边、事件点边框暗色下为白色。
+### 2.3 合并冲突流程
+
+- 顶部 `ConflictBanner`（占布局空间）：类型、`source → target`、还剩 N 个、已解决 M 个；「继续合并」（还有冲突标记时禁用）与「中止」（二次确认）。
+- 展开后复用工作区文件树（`ConflictTree`）：目录折叠、字母、右侧「N 处冲突」或绿色「（解决）」。
+- 点冲突文件 → 底部 `DetailPane` 冲突模式（`ConflictView`）：带 `<<<<<<<` / `=======` / `>>>>>>>` 的全文着色 + 「标记已解决」（执行 `add`）。
+- 冲突块计数 = 文件里 `^<<<<<<<` 行数；归零即显示「（解决）」，**不自动 add**；点「继续」时统一 add 所有 0 块文件再 continue（老师确认的口径）。
+- 冲突期间「提交」换成「完成合并」；「丢弃改动」禁用；工作区列表里的冲突文件点击也进冲突详情。
+- 状态全在 `.git`，每次 `refreshAll` 拉 `repoOperation`，关面板 / 刷新页面 / 重启 DSH 都能恢复。
+
+### 2.4 更多菜单与回收站
+
+- 「更多」→「回收站」（`RecycleBin`）：列出游离提交（短 hash、标题、丢失时间、原因），可「查看」/「切换」（游离 HEAD）/「恢复为分支」（`createBranch` from hash）。
+- 游离 HEAD 在 header 显示警告色「游离 HEAD（hash）」徽标。
 
 ## 3. 关键实现位置速查
 
 | 想改什么 | 去哪 |
 |---|---|
-| reflog 读取/过滤 | `lib/git-core.mjs` 的 `reflogEvents()`（约 600 行后） |
-| 事件卡片渲染 | `lib/client.js` 的 `BranchEventRow` / `MergeEventRow`（约 3000 行） |
-| 提交行/点/合并图标 | `lib/client.js` 的 `CommitRow`（约 3090 行） |
-| 分支色/图标色 | `lib/client.js` 的 `branchColor` / `branchIconColor` |
-| 事件分组逻辑 | `lib/client.js` GitPanel 里 `branchRows / mergeRows / eventsByHash` 三张表 |
-| 样式 | `lib/client.js` 末尾 CSS 数组（后写的覆盖前面的） |
+| 分支/冲突/游离的 git 逻辑 | `lib/git-core.mjs` 末尾「branch management / merge-conflict state」段 |
+| 新方法契约 | `lib/typert.host.js` 的 `reqShaped` / invocations；remote 包 `descrip` |
+| 分支浮层 | `lib/client.js` 的 `BranchPopover` |
+| 冲突气泡 | `ConflictBanner` + `ConflictTree` + `ConflictView` |
+| 回收站 | `RecycleBin` + `refreshOrphans` |
+| 弹窗分支 | `ActionModal` 的 `deleteBranch / renameBranch / merge / abortOperation / recoverCommit` |
+| 工作区点击分发 | `openPreview`（冲突文件 → 冲突详情，普通文件 → workDiff） |
+| 样式 | `lib/client.js` 的 css 数组末尾「branch popover / conflict banner / recycle bin」段 |
 
-## 4. 还没做 / 待确认
+## 4. 还没做 / 下一步
 
-1. **合并卡片的双击统计**：老师要求「双击 → `git diff --stat 第一父..合并提交` 的改动统计，点某个文件看该文件 diff」。目前快进卡片不可展开、双击未接；true merge 的提交行双击是现有 commit 行为（打开 detail），但**统计范围是相对第一父**这一点没验证过。
-2. **幽灵行**：reflog 里存在但任何 ref 都不可达的提交（被 reset 丢弃的），双轴版本有对应列表（`dshg-ghosts`），单轴重写时**没有移植**。
-3. **事件卡片排版**：老师多次说「和 commit 不一样」，已按 padding 6px / 标题 13px / meta 10px 调过，但可能仍有细节偏差。
-4. **分支面板**（讨论过未做）：列当前分支、已合并、已删除（reflog 创建过但 refs 已无）。
-5. **子按钮**：合并卡片左下角/右下角的操作按钮（老师说过「先不弄按钮，只保留右下角展开收起」，后来改成快进不可展开）。
+1. **stash**（老师说的下一个功能）：core 已有 `stashAction`，UI 未接；建议放「更多」菜单。
+2. 远程分支：`branchDetails` 有 `upstream` 字段，浮层暂不展示。
+3. 冲突气泡的「自动刷新」：目前靠手动刷新 / 操作后刷新；想做到编辑器保存后自动更新，需要轮询或文件监听。
+4. 侧栏入口的红点提示冲突进行中（设计文稿提过，未做）。
+5. 分支浮层的「已删除分支」分组（reflog 创建过、refs 已无）未做。
+6. 合并弹窗的快速合并预检（分叉时提前禁用）未做，目前靠 git 返回 `not-fast-forward`。
+7. `PANEL_VERSION` 仍是 0.1.4，未随本次功能升版。
 
 ## 5. 工作方式（老师定的规矩）
 
@@ -82,4 +93,4 @@ node test-install.mjs
 node test-client-offline.mjs
 ```
 
-当前全绿。`test-rails.mjs`（双轴自查脚本）已随双轴一起删除，存档在 `archive/dual-track`。
+当前全绿（本轮新增覆盖：branchDetails、三种合并方式、冲突状态/详情/继续、squash 状态与中止、游离提交、删除预览、冲突气泡与分支浮层渲染）。

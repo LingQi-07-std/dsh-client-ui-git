@@ -138,6 +138,23 @@ const gitRemote = {
 	status: async () => ({ ok: true, value: statusValue }),
 	branch: async () => ({ ok: true, value: branchValue }),
 	reflogEvents: async () => ({ ok: true, value: { ok: true, events: [] } }),
+	branchDetails: async () => ({
+		ok: true,
+		value: {
+			branches: [
+				{ name: "main", hash: "abc12345deadbeef", short: "abc12345", upstream: "", date: new Date(Date.now() - 60000).toISOString(), subject: "feat: first commit", current: true, merged: true, created: null },
+				{ name: "feature/x", hash: "22222222deadbeef", short: "22222222", upstream: "", date: new Date(Date.now() - 3600000).toISOString(), subject: "feature work", current: false, merged: false, created: { date: new Date(Date.now() - 86400000).toISOString(), from: "main", hash: "22222222deadbeef" } }
+			]
+		}
+	}),
+	repoOperation: async () => ({ ok: true, value: { operation: null, conflicts: [], resolved: [], total: 0, unresolved: 0 } }),
+	conflictFile: async (request) => ({ ok: true, value: { file: request?.file ?? "", worktree: "", ours: "", theirs: "", base: "", binary: false, truncated: false } }),
+	orphanedCommits: async () => ({ ok: true, value: { ok: true, commits: [] } }),
+	branchExclusiveCommits: async () => ({ ok: true, value: { ok: true, commits: [] } }),
+	operationContinue: async () => ({ ok: true, value: { ok: true, message: "已完成" } }),
+	operationAbort: async () => ({ ok: true, value: { ok: true, message: "已中止" } }),
+	deleteBranch: async () => ({ ok: true, value: { ok: true, message: "已删除" } }),
+	renameBranch: async () => ({ ok: true, value: { ok: true, message: "已重命名" } }),
 	diff: async (request) => {
 		if (request?.commit !== void 0 && request?.stat === true) {
 			callCount.detail += 1;
@@ -422,7 +439,10 @@ await check("clean workspace renders the centred clean state", async () => {
 		await flush();
 		tree = renderTree(renderComponent(EntryComponent, entryProps));
 		assert(findClass(tree, "dshg-clean").length === 1, "clean placeholder missing");
-		assert(findClass(tree, "dshg-opsBar").length === 0, "ops bar must be hidden when clean");
+		const opsBar = findClass(tree, "dshg-opsBar");
+		assert(opsBar.length === 1, "branch / more must stay reachable on a clean workspace");
+		const buttons = findClass(opsBar[0], "dshg-op");
+		assert(buttons.length === 2, `clean bar should only offer branch + more, got ${buttons.length}`);
 	} finally {
 		gitRemote.status = previousStatus;
 		gitRemote.snapshot = previousSnapshot;
@@ -493,6 +513,72 @@ await check("tracks the DOM-selected conversation id", async () => {
 		documentStub.querySelector = prevQuery;
 		slotStore.delete(EntryComponent);
 	}
+});
+
+await check("merge conflict banner shows progress and blocks continue", async () => {
+	const previousOperation = gitRemote.repoOperation;
+	gitRemote.repoOperation = async () => ({
+		ok: true,
+		value: {
+			operation: { kind: "merge", source: "feature/x", target: "main", message: "Merge branch 'feature/x'", startedAt: "", head: "22222222" },
+			conflicts: [
+				{ path: "src/app.js", code: "UU", blocks: 3 },
+				{ path: "notes.md", code: "UU", blocks: 0 }
+			],
+			resolved: [],
+			total: 2,
+			unresolved: 2
+		}
+	});
+	slotStore.delete(EntryComponent);
+	try {
+		let tree = renderTree(renderComponent(EntryComponent, entryProps));
+		await flush();
+		findClass(tree, "dshg-footerLabel")[0].props.onClick();
+		tree = renderTree(renderComponent(EntryComponent, entryProps));
+		await flush();
+		tree = renderTree(renderComponent(EntryComponent, entryProps));
+		assert(findClass(tree, "dshg-conflict").length === 1, "conflict banner missing");
+		const sub = textOf(findClass(tree, "dshg-conflictSub")[0]);
+		assert(sub.includes("还剩 1 个文件"), `banner should count only unsolved files, got ${sub}`);
+		const cont = findClass(tree, "dshg-op").find((button) => textOf(button) === "继续合并");
+		assert(cont !== void 0 && cont.props.disabled === true, "continue must stay disabled while markers remain");
+		const files = findClass(tree, "dshg-cFile");
+		assert(files.length === 2, `expected two conflict files, got ${files.length}`);
+		assert(files.some((file) => textOf(file).includes("（解决）")), "a marker-free file should read （解决）");
+		// Clicking a conflict file opens the conflict pane.
+		files[0].props.onClick();
+		tree = renderTree(renderComponent(EntryComponent, entryProps));
+		await flush();
+		tree = renderTree(renderComponent(EntryComponent, entryProps));
+		assert(findClass(tree, "dshg-detailOpen").length === 1, "conflict pane did not open");
+		assert(String(textOf(findClass(tree, "dshg-detailTitle")[0])).includes("冲突文件"), "conflict title missing");
+	} finally {
+		gitRemote.repoOperation = previousOperation;
+		slotStore.delete(EntryComponent);
+	}
+});
+
+await check("branch popover lists branches and expands creation info", async () => {
+	slotStore.delete(EntryComponent);
+	let tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	findClass(tree, "dshg-footerLabel")[0].props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	const branchButton = findClass(tree, "dshg-opIcon").find((button) => button.props.title === "分支");
+	assert(branchButton !== void 0, "branch tool button missing");
+	branchButton.props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	assert(findClass(tree, "dshg-pop").length === 1, "branch popover missing");
+	assert(findClass(tree, "dshg-bBranch").length === 2, "branch rows missing");
+	const heads = findClass(tree, "dshg-bHead");
+	heads[1].props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	const body = findClass(tree, "dshg-bBody");
+	assert(body.length === 1, "expanded branch body missing");
+	assert(textOf(body[0]).includes("基于 main"), "creation source missing");
 });
 
 await check("dev diagnostics stay hidden until the switch is flipped", async () => {

@@ -52,3 +52,30 @@
 - `commit(stagedOnly)` 无暂存时曾报成 `git-exit`，同上。
 - 离线渲染测试用 `vm.runInNewContext` 跑真 bundle：hook 槽位按组件用 WeakMap 隔离，`useState` setter 要捕获自己的 slots，`useEffect` 要比较 deps。
 - `plugin_manager list_bundles` 的 `source` 才是真实安装位置；`enabled: true` 不代表文件最新。
+
+## 9. squash 合并不是普通 merge（2026-10-24 实测）
+
+- `git merge --squash` 冲突时：**没有 `MERGE_HEAD`**，只有 `SQUASH_MSG`（`MERGE_MSG` 也会写）；`git status` 仍是 `UU`。
+- 解决后的「继续」是 `git commit --no-edit`（用 SQUASH_MSG 当消息），不是 `merge --continue`。
+- 中止：`merge --abort` 不认（没有 MERGE_HEAD），只能 `reset --hard HEAD`，会丢解决进度，必须二次确认。
+- 所以进行中操作的探测顺序必须是 rebase 目录 → MERGE_HEAD → CHERRY_PICK_HEAD → REVERT_HEAD → SQUASH_MSG，不能只看 MERGE_HEAD。
+
+## 10. 冲突期间的 git 允许/禁止（实测）
+
+- 未解决（索引有 unmerged）：commit / merge / checkout 其他分支 / stash 全部拒绝；`add` 允许；tag、branch 改名、删除其他分支允许。
+- 全部 add 后（索引干净、MERGE_HEAD 还在）：commit 允许（等于完成合并）；merge 仍拒绝（not concluded）；checkout 仍拒绝（本地改动会被覆盖）。
+- `git checkout -b` 在冲突中允许，会把冲突状态带过去 —— 面板新建分支只调 `git branch`，绝不切换。
+
+## 11. 请求 schema 必须与实际调用一致（本轮两个真 bug）
+
+- Host 侧对请求参数是严格 `decode`（`dsh-api-gateway/lib/index.js` 的 `validateArguments` → `codec.create().parse`），客户端侧不 parse 请求（`prepareInvocation` 只组装 args）。所以客户端 schema 宽松也救不了 Host。
+- `restore` 原本用 `reqWithCommit`（要求 commit），面板调用只传 `{path}` → 必然 `gateway/arguments-invalid`；改成 `{path, paths?}`。
+- `commit` 的 gateway 曾硬编码 `stagedOnly: false`，弹窗说「只提交暂存」实际 `add -A`；现在按请求透传。
+- 新增方法时，请求 schema 必须覆盖面板真实字段（如 `deleteBranch` 的 `name/force`、`renameBranch` 的 `from/to`、`operationContinue` 的 `kind`）。
+
+## 12. 分支 API 细节
+
+- `git for-each-ref --format=%(refname:short)` 对远程分支输出的是 `origin/main`，**不是** `remotes/origin/main`；用 `/^remotes\//` 过滤远程分支无效。
+- 「已合并进当前 HEAD」用 `git for-each-ref --merged=HEAD`，不要自己数祖先。
+- 删除前预览游离提交：`git rev-list <branch> --not <其余所有 ref>`；删除后它们只在 reflog 保留期内可恢复。
+- 分支创建记录只有 `checkout -b` 会写 `branch: Created from X`；`git branch x` 的记录可能是 `Created from HEAD`，UI 要能接受 "HEAD"。

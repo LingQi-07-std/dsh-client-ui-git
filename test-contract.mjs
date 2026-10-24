@@ -41,6 +41,7 @@ const z = {
 // --- end mini-zod replica ---
 
 const dir = mkdtempSync(join(tmpdir(), "dsh-git-contract-"));
+const repo2 = mkdtempSync(join(tmpdir(), "dsh-git-contract2-"));
 const sh = (...args) => spawnSync("git", args, { cwd: dir, stdio: "pipe" });
 const results = [];
 const check = (name, fn) => { try { fn(); results.push(`PASS ${name}`); } catch (e) { results.push(`FAIL ${name}: ${e.message}`); process.exitCode = 1; } };
@@ -67,7 +68,7 @@ try {
 	check("manifest face/package", () => {
 		if (manifest.face !== "host") throw new Error("face != host");
 		if (manifest.package !== "@dsh-external/dsh-client-ui-git") throw new Error("package mismatch");
-		if (!Array.isArray(manifest.invocations) || manifest.invocations.length !== 17) throw new Error("expected 17 invocations, got " + manifest.invocations?.length);
+		if (!Array.isArray(manifest.invocations) || manifest.invocations.length !== 26) throw new Error("expected 26 invocations, got " + manifest.invocations?.length);
 		if (!Array.isArray(manifest.schemas)) throw new Error("schemas must be array");
 		if (typeof manifest.model !== "object" || !Array.isArray(manifest.model.services)) throw new Error("model malformed");
 	});
@@ -161,6 +162,85 @@ try {
 		if (!threw) throw new Error("should have thrown");
 	});
 
+	// --- branch management / conflict contract (independent repository) ---
+	const sh2 = (...args) => spawnSync("git", args, { cwd: repo2, stdio: "pipe" });
+	sh2("init", "-q", "-b", "main");
+	sh2("config", "user.email", "t@t.t");
+	sh2("config", "user.name", "T");
+	writeFileSync(join(repo2, "f.txt"), "base\n");
+	sh2("add", "f.txt");
+	sh2("commit", "-qm", "base");
+	sh2("checkout", "-q", "-b", "side");
+	writeFileSync(join(repo2, "f.txt"), "side\n");
+	sh2("commit", "-qam", "side");
+	sh2("checkout", "-q", "main");
+	writeFileSync(join(repo2, "f.txt"), "main\n");
+	sh2("commit", "-qam", "main");
+
+	const details = await gateway.branchDetails({ path: repo2 });
+	check("branchDetails parses through manifest schema", () => {
+		const decoded = byMethod.branchDetails.result.schema.parse(details);
+		const side = decoded.branches.find((branch) => branch.name === "side");
+		if (side === void 0 || side.created === null) throw new Error("missing branch detail");
+		if (side.created.from !== "main" && side.created.from !== "HEAD") throw new Error("creation source wrong: " + side.created.from);
+	});
+
+	const mergedAgain = await gateway.merge({ path: repo2, target: "side", mode: "no-ff" });
+	const operation = await gateway.repoOperation({ path: repo2 });
+	check("repoOperation parses through manifest schema", () => {
+		if (mergedAgain.ok !== false) throw new Error("merge should conflict");
+		const decoded = byMethod.repoOperation.result.schema.parse(operation);
+		if (decoded.operation === null || decoded.operation.kind !== "merge") throw new Error("bad operation");
+		if (decoded.operation.source !== "side" || decoded.operation.target !== "main") throw new Error("bad direction");
+		if (decoded.conflicts.length !== 1 || decoded.conflicts[0].blocks !== 1) throw new Error("bad conflicts");
+	});
+
+	const conflict = await gateway.conflictFile({ path: repo2, file: "f.txt" });
+	check("conflictFile parses through manifest schema", () => {
+		const decoded = byMethod.conflictFile.result.schema.parse(conflict);
+		if (!decoded.worktree.includes("<<<<<<<")) throw new Error("markers missing");
+		if (!decoded.ours.includes("main") || !decoded.theirs.includes("side")) throw new Error("sides wrong");
+	});
+
+	writeFileSync(join(repo2, "f.txt"), "resolved\n");
+	sh2("add", "f.txt");
+	const continued = await gateway.operationContinue({ path: repo2, kind: "merge" });
+	check("operationContinue parses through manifest schema", () => {
+		const decoded = byMethod.operationContinue.result.schema.parse(continued);
+		if (decoded.ok !== true) throw new Error("continue failed");
+	});
+
+	const orphans = await gateway.orphanedCommits({ path: repo2 });
+	check("orphanedCommits parses through manifest schema", () => {
+		const decoded = byMethod.orphanedCommits.result.schema.parse(orphans);
+		if (decoded.ok !== true || !Array.isArray(decoded.commits)) throw new Error("bad orphans");
+	});
+
+	const exclusive = await gateway.branchExclusiveCommits({ path: repo2, name: "side" });
+	check("branchExclusiveCommits parses through manifest schema", () => {
+		const decoded = byMethod.branchExclusiveCommits.result.schema.parse(exclusive);
+		if (decoded.ok !== true) throw new Error("bad exclusive");
+	});
+
+	sh2("branch", "tmp");
+	const renamed = await gateway.renameBranch({ path: repo2, from: "tmp", to: "tmp2" });
+	check("renameBranch parses through manifest schema", () => {
+		const decoded = byMethod.renameBranch.result.schema.parse(renamed);
+		if (decoded.ok !== true) throw new Error("rename failed");
+	});
+
+	const removed = await gateway.deleteBranch({ path: repo2, name: "tmp2" });
+	check("deleteBranch parses through manifest schema", () => {
+		const decoded = byMethod.deleteBranch.result.schema.parse(removed);
+		if (decoded.ok !== true) throw new Error("delete failed");
+	});
+
+	const restored = await gateway.restore({ path: repo2 });
+	check("restore request without commit passes the manifest", () => {
+		const decoded = byMethod.restore.result.schema.parse(restored);
+		if (decoded.ok !== true) throw new Error("restore failed");
+	});
+
 	// client.js no longer embeds the remote contribution: the mount moved to
 	// the separate @dsh-external/dsh-client-git-remote bundle (official
 	// api-remotes split, because cordis inject guards nested ctx access).
@@ -174,7 +254,7 @@ try {
 	check("git-remote bundle embeds mount", () => {
 		if (!remoteSource.includes("$mount")) throw new Error("missing $mount");
 		const marshalCalls = (remoteSource.match(/descrip\("/g) ?? []).length;
-		if (marshalCalls !== 17) throw new Error("expected 17 descriptors, got " + marshalCalls);
+		if (marshalCalls !== 26) throw new Error("expected 26 descriptors, got " + marshalCalls);
 		if (!remoteSource.includes('package: "@dsh-external/dsh-client-git-remote"')) throw new Error("missing package id");
 	});
 
@@ -182,4 +262,5 @@ try {
 	console.log(process.exitCode === 1 ? "\nSOME CHECKS FAILED" : "\nALL CONTRACT CHECKS PASSED");
 } finally {
 	rmSync(dir, { recursive: true, force: true });
+	rmSync(repo2, { recursive: true, force: true });
 }

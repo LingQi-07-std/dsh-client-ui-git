@@ -130,12 +130,65 @@ window.__ModuleLoader__.load({
 		const gitIsRepoResult = z.object({ repo: z.boolean(), error: z.string().optional() });
 		const gitWriteResult = z.union([
 			z.object({ ok: z.literal(true), message: z.string(), id: z.string().optional() }),
-			z.object({ ok: z.literal(false), error: z.string() })
+			z.object({ ok: z.literal(false), error: z.string(), errorCode: z.string().optional() })
 		]);
 		const gitMergeResult = z.union([
 			z.object({ ok: z.literal(true), message: z.string() }),
-			z.object({ ok: z.literal(false), error: z.string(), conflicts: z.array(z.string()).optional() })
+			z.object({ ok: z.literal(false), error: z.string(), errorCode: z.string().optional(), conflicts: z.array(z.string()).optional() })
 		]);
+		const gitBranchInfo = z.object({
+			name: z.string(),
+			hash: z.string(),
+			short: z.string(),
+			upstream: z.string(),
+			date: z.string(),
+			subject: z.string(),
+			current: z.boolean(),
+			merged: z.boolean(),
+			created: z.union([
+				z.null(),
+				z.object({ date: z.string(), from: z.string(), hash: z.string() })
+			])
+		});
+		const gitBranchDetailsResult = z.object({ branches: z.array(gitBranchInfo) });
+		const gitRepoOperation = z.object({
+			kind: z.string(),
+			source: z.string(),
+			target: z.string(),
+			message: z.string(),
+			startedAt: z.string(),
+			head: z.string()
+		});
+		const gitConflictEntry = z.object({ path: z.string(), code: z.string(), blocks: z.number() });
+		const gitRepoOperationResult = z.object({
+			operation: z.union([z.null(), gitRepoOperation]),
+			conflicts: z.array(gitConflictEntry),
+			resolved: z.array(z.object({ path: z.string() })),
+			total: z.number(),
+			unresolved: z.number()
+		});
+		const gitConflictFileResult = z.object({
+			file: z.string(),
+			worktree: z.string(),
+			ours: z.string(),
+			theirs: z.string(),
+			base: z.string(),
+			binary: z.boolean(),
+			truncated: z.boolean()
+		});
+		const gitOrphanCommit = z.object({
+			hash: z.string(),
+			short: z.string(),
+			subject: z.string(),
+			author: z.string(),
+			date: z.string(),
+			lostAt: z.string(),
+			reason: z.string(),
+			ref: z.string()
+		});
+		const gitOrphanResult = z.object({ ok: z.boolean(), commits: z.array(gitOrphanCommit), error: z.string().optional() });
+		const gitExclusiveCommit = z.object({ hash: z.string(), short: z.string(), subject: z.string() });
+		const gitExclusiveResult = z.object({ ok: z.boolean(), commits: z.array(gitExclusiveCommit), error: z.string().optional() });
 		//#endregion
 
 		const PKG = "@dsh-external/dsh-client-ui-git";
@@ -154,6 +207,10 @@ window.__ModuleLoader__.load({
 		const withMessage = z.object({ path: z.string(), message: z.string() }).passthrough();
 		const withCommit = z.object({ path: z.string(), commit: z.string() }).passthrough();
 		const withPaths = z.object({ path: z.string(), paths: z.array(z.string()) }).passthrough();
+		const withName = z.object({ path: z.string(), name: z.string() }).passthrough();
+		const withFile = z.object({ path: z.string(), file: z.string() }).passthrough();
+		const withKind = z.object({ path: z.string(), kind: z.string() }).passthrough();
+		const withOptionalPaths = z.object({ path: z.string(), paths: z.array(z.string()).optional() }).passthrough();
 		const TYPERT_REMOTE = {
 			package: "@dsh-external/dsh-client-git-remote",
 			descriptors: [
@@ -162,6 +219,11 @@ window.__ModuleLoader__.load({
 				descrip("status", "GitStatusResult", gitStatusResult),
 				descrip("diff", "GitDiffResult", gitDiffResult, withCommit),
 				descrip("branch", "GitBranchResult", gitBranchResult),
+				descrip("branchDetails", "GitBranchDetailsResult", gitBranchDetailsResult),
+				descrip("branchExclusiveCommits", "GitExclusiveResult", gitExclusiveResult, withName),
+				descrip("repoOperation", "GitRepoOperationResult", gitRepoOperationResult),
+				descrip("conflictFile", "GitConflictFileResult", gitConflictFileResult, withFile),
+				descrip("orphanedCommits", "GitOrphanResult", gitOrphanResult),
 				descrip("reflogEvents", "GitReflogResult", gitReflogResult),
 				descrip("createBranch", "GitWriteResult", gitWriteResult),
 				descrip("isRepo", "GitIsRepoResult", gitIsRepoResult),
@@ -172,7 +234,11 @@ window.__ModuleLoader__.load({
 				descrip("merge", "GitMergeResult", gitMergeResult, withTarget),
 				descrip("add", "GitWriteResult", gitWriteResult, withPaths),
 				descrip("unstage", "GitWriteResult", gitWriteResult, withPaths),
-				descrip("restore", "GitWriteResult", gitWriteResult, withCommit),
+				descrip("deleteBranch", "GitWriteResult", gitWriteResult, withName),
+				descrip("renameBranch", "GitWriteResult", gitWriteResult, z.object({ path: z.string(), from: z.string(), to: z.string() }).passthrough()),
+				descrip("operationContinue", "GitWriteResult", gitWriteResult, withKind),
+				descrip("operationAbort", "GitWriteResult", gitWriteResult, withKind),
+				descrip("restore", "GitWriteResult", gitWriteResult, withOptionalPaths),
 				descrip("reset", "GitWriteResult", gitWriteResult, withCommit)
 			]
 		};

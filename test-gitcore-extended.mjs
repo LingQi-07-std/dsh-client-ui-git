@@ -189,6 +189,165 @@ try {
 		if (!state.clean) throw new Error("tree still dirty: " + JSON.stringify(state.entries));
 	});
 
+	// ---------- branch details / merge modes / conflict state ----------
+	const m = makeRepo("modes");
+	writeFileSync(join(m, "f.txt"), "base\n");
+	await git.commit(m, "base");
+	await git.createBranch(m, "side");
+	await git.checkout(m, "side");
+	writeFileSync(join(m, "f.txt"), "side\n");
+	await git.commit(m, "side change");
+	await git.checkout(m, "main");
+	writeFileSync(join(m, "g.txt"), "main only\n");
+	await git.commit(m, "main change");
+
+	await checkAsync("branchDetails reports tip, current, merged and creation", async () => {
+		const out = await git.branchDetails(m);
+		const main = out.branches.find((branch) => branch.name === "main");
+		const side = out.branches.find((branch) => branch.name === "side");
+		if (main === void 0 || side === void 0) throw new Error("branches missing: " + JSON.stringify(out.branches));
+		if (main.current !== true) throw new Error("main should be current");
+		if (side.merged !== false) throw new Error("side should not be merged");
+		if (side.created === null || side.created.from !== "main") throw new Error("creation record missing: " + JSON.stringify(side.created));
+		if (!/^[0-9a-f]{8}$/.test(side.short)) throw new Error("short hash missing");
+		if (out.branches[0].name !== "main") throw new Error("current branch must sort first");
+	});
+
+	await checkAsync("merge ff-only refuses diverged branches with not-fast-forward", async () => {
+		const out = await git.merge(m, "side", { mode: "ff-only" });
+		if (out.ok !== false) throw new Error("should refuse");
+		if (out.errorCode !== "not-fast-forward") throw new Error("bad code: " + out.errorCode);
+	});
+
+	await checkAsync("merge no-ff creates a merge commit", async () => {
+		const out = await git.merge(m, "side", { mode: "no-ff" });
+		if (!out.ok) throw new Error(out.error);
+		const head = (await git.log(m, 1)).commits[0];
+		if (head.parents.length !== 2) throw new Error("not a merge commit: " + JSON.stringify(head.parents));
+	});
+
+	const sq = makeRepo("squash");
+	writeFileSync(join(sq, "a.txt"), "base a\n");
+	writeFileSync(join(sq, "b.txt"), "base b\n");
+	await git.commit(sq, "base");
+	await git.createBranch(sq, "side");
+	await git.checkout(sq, "side");
+	writeFileSync(join(sq, "a.txt"), "side a\n");
+	await git.commit(sq, "side change");
+	await git.checkout(sq, "main");
+	writeFileSync(join(sq, "b.txt"), "main b\n");
+	await git.commit(sq, "main change");
+
+	await checkAsync("squash merge applies one single-parent commit", async () => {
+		const out = await git.merge(sq, "side", { mode: "squash" });
+		if (!out.ok) throw new Error(out.error);
+		const head = (await git.log(sq, 1)).commits[0];
+		if (head.parents.length !== 1) throw new Error("squash should have one parent: " + JSON.stringify(head.parents));
+		const content = await git.showFile(sq, head.hash, "a.txt");
+		if (!content.ok || !content.content.includes("side a")) throw new Error("side change not applied");
+	});
+
+	const c2 = makeRepo("conflictstate");
+	writeFileSync(join(c2, "f.txt"), "base\n");
+	await git.commit(c2, "base");
+	await git.createBranch(c2, "side");
+	await git.checkout(c2, "side");
+	writeFileSync(join(c2, "f.txt"), "side\n");
+	await git.commit(c2, "side change");
+	await git.checkout(c2, "main");
+	writeFileSync(join(c2, "f.txt"), "main\n");
+	await git.commit(c2, "main change");
+
+	await checkAsync("merge conflict is visible in repoOperation", async () => {
+		const merged = await git.merge(c2, "side");
+		if (merged.ok !== false) throw new Error("should conflict");
+		const state = await git.repoOperation(c2);
+		if (state.operation === null || state.operation.kind !== "merge") throw new Error("operation not detected: " + JSON.stringify(state.operation));
+		if (state.operation.source !== "side" || state.operation.target !== "main") throw new Error("merge direction wrong: " + JSON.stringify(state.operation));
+		if (state.conflicts.length !== 1 || state.conflicts[0].path !== "f.txt") throw new Error(JSON.stringify(state.conflicts));
+		if (state.conflicts[0].blocks !== 1) throw new Error("expected one conflict block, got " + state.conflicts[0].blocks);
+		if (state.unresolved !== 1) throw new Error("unresolved count wrong");
+	});
+
+	await checkAsync("conflictFile exposes worktree markers and both sides", async () => {
+		const out = await git.conflictFile(c2, "f.txt");
+		if (!out.worktree.includes("<<<<<<<") || !out.worktree.includes(">>>>>>>")) throw new Error("markers missing");
+		if (!out.ours.includes("main") || !out.theirs.includes("side")) throw new Error("sides wrong: " + JSON.stringify({ ours: out.ours, theirs: out.theirs }).slice(0, 200));
+	});
+
+	await checkAsync("edited file shows zero blocks, add clears it, continue finishes the merge", async () => {
+		writeFileSync(join(c2, "f.txt"), "resolved\n");
+		const edited = await git.repoOperation(c2);
+		const file = edited.conflicts.find((item) => item.path === "f.txt");
+		if (file === void 0 || file.blocks !== 0) throw new Error("blocks should be 0 after editing: " + JSON.stringify(file));
+		await git.addPaths(c2, ["f.txt"]);
+		const after = await git.repoOperation(c2);
+		if (after.unresolved !== 0) throw new Error("still unresolved: " + JSON.stringify(after.conflicts));
+		if (!after.resolved.some((item) => item.path === "f.txt")) throw new Error("resolved list missing f.txt");
+		const done = await git.operationContinue(c2, "merge");
+		if (!done.ok) throw new Error(done.error);
+		const clear = await git.repoOperation(c2);
+		if (clear.operation !== null) throw new Error("operation not cleared");
+		const head = (await git.log(c2, 1)).commits[0];
+		if (head.parents.length !== 2) throw new Error("merge commit missing");
+	});
+
+	const c3 = makeRepo("squashconflict");
+	writeFileSync(join(c3, "f.txt"), "base\n");
+	await git.commit(c3, "base");
+	await git.createBranch(c3, "side");
+	await git.checkout(c3, "side");
+	writeFileSync(join(c3, "f.txt"), "side\n");
+	await git.commit(c3, "side change");
+	await git.checkout(c3, "main");
+	writeFileSync(join(c3, "f.txt"), "main\n");
+	await git.commit(c3, "main change");
+
+	await checkAsync("squash conflict is detected as kind squash and aborts cleanly", async () => {
+		const merged = await git.merge(c3, "side", { mode: "squash" });
+		if (merged.ok !== false) throw new Error("should conflict");
+		const state = await git.repoOperation(c3);
+		if (state.operation === null || state.operation.kind !== "squash") throw new Error("kind wrong: " + JSON.stringify(state.operation));
+		const aborted = await git.abortOperation(c3, "squash");
+		if (!aborted.ok) throw new Error(aborted.error);
+		const after = await git.repoOperation(c3);
+		if (after.operation !== null) throw new Error("squash state not cleared");
+	});
+
+	// ---------- orphaned commits / branch deletion preview ----------
+	const o = makeRepo("orphans");
+	writeFileSync(join(o, "f.txt"), "v1\n");
+	await git.commit(o, "first");
+	writeFileSync(join(o, "f.txt"), "v2\n");
+	await git.commit(o, "second");
+	const lostHash = (await git.log(o, 1)).commits[0].hash;
+	await git.reset(o, "HEAD~1");
+
+	await checkAsync("orphanedCommits finds the commit a hard reset dropped", async () => {
+		const out = await git.orphanedCommits(o);
+		if (!out.ok) throw new Error(out.error);
+		const lost = out.commits.find((commit) => commit.hash === lostHash);
+		if (lost === void 0) throw new Error("lost commit not listed: " + JSON.stringify(out.commits.map((commit) => commit.short)));
+		if (lost.subject !== "second") throw new Error("subject missing");
+		if (lost.lostAt.length === 0) throw new Error("lostAt missing");
+	});
+
+	await checkAsync("branchExclusiveCommits lists commits only that branch has", async () => {
+		await git.createBranch(o, "recover", lostHash);
+		const out = await git.branchExclusiveCommits(o, "recover");
+		if (!out.ok) throw new Error(out.error);
+		if (out.commits.length !== 1 || out.commits[0].hash !== lostHash) throw new Error(JSON.stringify(out.commits));
+	});
+
+	await checkAsync("deleteBranch refuses unmerged unless forced", async () => {
+		const refused = await git.deleteBranch(o, "recover");
+		if (refused.ok !== false || refused.errorCode !== "not-merged") throw new Error("should refuse: " + JSON.stringify(refused));
+		const forced = await git.deleteBranch(o, "recover", { force: true });
+		if (!forced.ok) throw new Error(forced.error);
+		const list = await git.branch(o);
+		if (list.branches.includes("recover")) throw new Error("branch still listed");
+	});
+
 	// ---------- structured errors ----------
 	await checkAsync("log on a non-repo reports not-a-repo", async () => {
 		const plain = mkdtempSync(join(tmpdir(), "dsh-gitcore-plain-"));
