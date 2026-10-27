@@ -464,11 +464,11 @@ await check("clean workspace renders the centred clean state", async () => {
 		const left = findClass(opsBar[0], "dshg-opsLeft")[0];
 		assert(left !== void 0, "the fixed action group is missing");
 		const direct = left.props.children.filter((node) => node !== null && node !== void 0 && node.type === "button");
-		assert(direct.length === 4, `clean bar should offer 4 fixed actions, got ${direct.length}`);
-		assert(findClass(opsBar[0], "dshg-opIcon").some((button) => button.props.title === "回收站"), "the recycle-bin entry must stay reachable");
+		assert(direct.length === 5, `clean bar should offer 5 fixed actions, got ${direct.length}`);
+		assert(findClass(opsBar[0], "dshg-moreAction").some((button) => button.props.title === "回收站"), "the recycle-bin entry must stay reachable");
 		const labels = direct.map(textOf);
-		assert(labels[0] === "全部提交" && labels[1] === "全部暂存" && labels[2] === "回退修改" && labels[3] === "全部撤销", `fixed buttons missing: ${JSON.stringify(labels)}`);
-		assert(direct[0].props.disabled === true && direct[1].props.disabled === true && direct[2].props.disabled === true && direct[3].props.disabled === true, "fixed buttons must be disabled on a clean tree");
+		assert(labels[0] === "全部提交" && labels[1] === "全部暂存" && labels[2] === "回退修改" && labels[3] === "全部撤销" && labels[4] === "全部入栈", `fixed buttons missing: ${JSON.stringify(labels)}`);
+		assert(direct[0].props.disabled === true && direct[1].props.disabled === true && direct[2].props.disabled === true && direct[3].props.disabled === true && direct[4].props.disabled === true, "fixed buttons must be disabled on a clean tree");
 	} finally {
 		gitRemote.status = previousStatus;
 		gitRemote.snapshot = previousSnapshot;
@@ -565,8 +565,10 @@ await check("merge conflict banner shows progress and blocks continue", async ()
 		await flush();
 		tree = renderTree(renderComponent(EntryComponent, entryProps));
 		assert(findClass(tree, "dshg-conflict").length === 1, "conflict banner missing");
+		const title = textOf(findClass(tree, "dshg-conflictTitle")[0]);
+		assert(title.includes("1 个文件"), `banner title should carry the pending count, got ${title}`);
 		const sub = textOf(findClass(tree, "dshg-conflictSub")[0]);
-		assert(sub.includes("还剩 1 个文件"), `banner should count only unsolved files, got ${sub}`);
+		assert(sub.includes("1 已解决"), `banner should count resolved files, got ${sub}`);
 		const cont = findClass(tree, "dshg-op").find((button) => textOf(button) === "继续合并");
 		assert(cont !== void 0 && cont.props.disabled === true, "continue must stay disabled while markers remain");
 		const files = findClass(tree, "dshg-cFile");
@@ -595,7 +597,7 @@ await check("branch popover lists branches and expands creation info", async () 
 	tree = renderTree(renderComponent(EntryComponent, entryProps));
 	const branchButton = findClass(tree, "dshg-opIcon").find((button) => button.props.title === "分支");
 	assert(branchButton !== void 0, "branch tool button missing");
-	branchButton.props.onClick();
+	branchButton.props.onClick({ stopPropagation() {} });
 	tree = renderTree(renderComponent(EntryComponent, entryProps));
 	const pops = findClass(tree, "dshg-pop").filter((node) => !String(node.props.className).includes("dshg-morePop"));
 	assert(pops.length === 1, `branch popover missing (${pops.length})`);
@@ -623,7 +625,7 @@ await check("branch dot filters the timeline and keeps at least one branch", asy
 	await flush();
 	tree = renderTree(renderComponent(EntryComponent, entryProps));
 	const branchButton = findClass(tree, "dshg-opIcon").find((button) => button.props.title === "分支");
-	branchButton.props.onClick();
+	branchButton.props.onClick({ stopPropagation() {} });
 	tree = renderTree(renderComponent(EntryComponent, entryProps));
 	assert(findClass(tree, "dshg-bDot").length === 2, "branch dots missing");
 	// All branches selected by default: the full graph shows.
@@ -656,7 +658,7 @@ await check("branch filter survives closing and reopening the panel", async () =
 	await flush();
 	tree = renderTree(renderComponent(EntryComponent, entryProps));
 	const branchButton = findClass(tree, "dshg-opIcon").find((button) => button.props.title === "分支");
-	branchButton.props.onClick();
+	branchButton.props.onClick({ stopPropagation() {} });
 	tree = renderTree(renderComponent(EntryComponent, entryProps));
 	findClass(tree, "dshg-bDot")[0].props.onClick({ stopPropagation() {} });
 	tree = renderTree(renderComponent(EntryComponent, entryProps));
@@ -671,7 +673,7 @@ await check("branch filter survives closing and reopening the panel", async () =
 	tree = renderTree(renderComponent(EntryComponent, entryProps));
 	assert(findClass(tree, "dshg-commit").length === 0, "filter must survive closing the panel");
 	// Restore the default (all branches) for later checks.
-	branchButton.props.onClick();
+	branchButton.props.onClick({ stopPropagation() {} });
 	tree = renderTree(renderComponent(EntryComponent, entryProps));
 	findClass(tree, "dshg-bDot")[0].props.onClick({ stopPropagation() {} });
 	tree = renderTree(renderComponent(EntryComponent, entryProps));

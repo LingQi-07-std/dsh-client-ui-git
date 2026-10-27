@@ -84,6 +84,19 @@ try {
 	if (!config.ok || config.enabled !== true) throw new Error("reflogBackupConfig failed: " + JSON.stringify(config));
 	const storedEvents = await gateway.reflogBackupRead({ path: dir });
 	if (!storedEvents.ok || storedEvents.events.length < 1) throw new Error("reflogBackupRead failed");
+	// Merge pre-flight: reports ff-only availability and would-be conflicts.
+	const preview = await gateway.mergePreview({ path: dir, target: "main", source: "feature" });
+	if (!preview.ok || typeof preview.ffOnly !== "boolean" || !Array.isArray(preview.conflicts)) throw new Error("mergePreview failed: " + JSON.stringify(preview));
+	// Stash round trip: push (-u) / list / apply / drop.
+	writeFileSync(join(dir, "stash-probe.txt"), "stash me\n");
+	const pushed = await gateway.stash({ path: dir, action: "push", message: "probe", includeUntracked: true });
+	if (!pushed.ok) throw new Error("stash push failed: " + JSON.stringify(pushed));
+	const listed = await gateway.stash({ path: dir, action: "list" });
+	if (!listed.ok || listed.entries.length < 1) throw new Error("stash list failed: " + JSON.stringify(listed));
+	const applied = await gateway.stash({ path: dir, action: "apply", ref: listed.entries[0].ref });
+	if (!applied.ok) throw new Error("stash apply failed: " + JSON.stringify(applied));
+	const dropped = await gateway.stash({ path: dir, action: "drop", ref: listed.entries[0].ref });
+	if (!dropped.ok) throw new Error("stash drop failed: " + JSON.stringify(dropped));
 	delete process.env.DSH_GIT_STATE_DIR;
 	console.log("\nALL HOST CHECKS PASSED");
 } finally {

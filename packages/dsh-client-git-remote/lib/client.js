@@ -190,6 +190,11 @@ window.__ModuleLoader__.load({
 		const gitExclusiveCommit = z.object({ hash: z.string(), short: z.string(), subject: z.string() });
 		const gitExclusiveResult = z.object({ ok: z.boolean(), commits: z.array(gitExclusiveCommit), error: z.string().optional() });
 		const gitPluginStateResult = z.object({ ok: z.boolean(), value: z.string().optional(), error: z.string().optional() });
+		const gitMergePreviewResult = z.object({ ok: z.boolean(), ffOnly: z.boolean().optional(), conflicts: z.array(z.string()).optional(), error: z.string().optional() });
+		const gitStashResult = z.union([
+			z.object({ ok: z.literal(true), message: z.string().optional(), entries: z.array(z.object({ ref: z.string(), hash: z.string().optional(), date: z.string().optional(), author: z.string().optional(), message: z.string() })).optional(), patch: z.string().optional(), truncated: z.boolean().optional() }),
+			z.object({ ok: z.literal(false), error: z.string(), errorCode: z.string().optional(), conflicts: z.array(z.string()).optional() })
+		]);
 		const gitReflogBackupResult = z.union([
 			z.object({ ok: z.literal(true), added: z.number(), total: z.number() }),
 			z.object({ ok: z.literal(false), error: z.string() })
@@ -239,6 +244,8 @@ window.__ModuleLoader__.load({
 				descrip("checkout", "GitWriteResult", gitWriteResult, withTarget),
 				descrip("revert", "GitWriteResult", gitWriteResult, withCommit),
 				descrip("merge", "GitMergeResult", gitMergeResult, withTarget),
+				descrip("mergePreview", "GitMergePreviewResult", gitMergePreviewResult, z.object({ path: z.string(), target: z.string(), source: z.string() }).passthrough()),
+				descrip("stash", "GitStashResult", gitStashResult, z.object({ path: z.string(), action: z.string(), message: z.string().optional(), ref: z.string().optional(), includeUntracked: z.boolean().optional(), all: z.boolean().optional(), paths: z.array(z.string()).optional(), index: z.boolean().optional(), staged: z.boolean().optional(), keepIndex: z.boolean().optional(), branch: z.string().optional() }).passthrough()),
 				descrip("add", "GitWriteResult", gitWriteResult, withPaths),
 				descrip("unstage", "GitWriteResult", gitWriteResult, withPaths),
 				descrip("deleteBranch", "GitWriteResult", gitWriteResult, withName),
