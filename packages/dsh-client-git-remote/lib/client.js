@@ -244,6 +244,8 @@ window.__ModuleLoader__.load({
 				descrip("checkout", "GitWriteResult", gitWriteResult, withTarget),
 				descrip("revert", "GitWriteResult", gitWriteResult, withCommit),
 				descrip("merge", "GitMergeResult", gitMergeResult, withTarget),
+				descrip("rebase", "GitMergeResult", gitMergeResult, z.object({ path: z.string(), upstream: z.string(), source: z.string().optional() }).passthrough()),
+				descrip("rebaseSkip", "GitMergeResult", gitMergeResult, z.object({ path: z.string() }).passthrough()),
 				descrip("mergePreview", "GitMergePreviewResult", gitMergePreviewResult, z.object({ path: z.string(), target: z.string(), source: z.string() }).passthrough()),
 				descrip("stash", "GitStashResult", gitStashResult, z.object({ path: z.string(), action: z.string(), message: z.string().optional(), ref: z.string().optional(), includeUntracked: z.boolean().optional(), all: z.boolean().optional(), paths: z.array(z.string()).optional(), index: z.boolean().optional(), staged: z.boolean().optional(), keepIndex: z.boolean().optional(), branch: z.string().optional() }).passthrough()),
 				descrip("add", "GitWriteResult", gitWriteResult, withPaths),

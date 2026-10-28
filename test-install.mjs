@@ -68,7 +68,7 @@ await check("workspace TYPERT manifest validates", async () => {
 	if (manifest.package !== PKG) throw new Error("manifest package mismatch");
 	if (manifest.face !== "host") throw new Error("face must be host");
 	if (!Array.isArray(manifest.schemas)) throw new Error("schemas array");
-	if (!Array.isArray(manifest.invocations) || manifest.invocations.length !== 33) throw new Error("33 invocations, got " + manifest.invocations?.length);
+	if (!Array.isArray(manifest.invocations) || manifest.invocations.length !== 35) throw new Error("35 invocations, got " + manifest.invocations?.length);
 	if (!manifest.model?.services || !manifest.model?.events || !manifest.model?.objects) throw new Error("model shape");
 	for (const inv of manifest.invocations) {
 		if (!inv.id || !inv.service || !inv.namespace || !inv.method) throw new Error(`bad invocation ${inv.id}`);
