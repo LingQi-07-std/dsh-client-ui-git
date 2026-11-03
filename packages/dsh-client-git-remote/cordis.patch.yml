@@ -1,6 +1,0 @@
-# dsh-client-git-remote bundle patch: mounts the `git` Remote namespace on the
-# client api gateway so the git visualizer panel can call it.
-# Always enable this row together with the `ui-git` bundle row.
-- insert:
-    - id: git-remote
-      name: '@dsh-external/dsh-client-git-remote'

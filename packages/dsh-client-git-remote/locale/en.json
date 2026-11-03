@@ -1,6 +1,0 @@
-{
-  "meta": {
-    "title": "Git Remote Mount",
-    "description": "Mounts the host `git` Remote namespace on the client gateway; required by the Git panel."
-  }
-}

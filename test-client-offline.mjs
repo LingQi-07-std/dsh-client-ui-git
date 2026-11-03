@@ -30,10 +30,18 @@ let hookCursor = 0;
 let lastGetSnapshot = null;
 const pendingEffects = [];
 const slotStore = new WeakMap();
+// Several instances of the SAME component type coexist (four <Presence>
+// wrappers, for example). React gives each its own hooks; the stand-in has to
+// do the same, or the last instance's state leaks into the next one. Instances
+// are told apart by their occurrence order within one render pass.
+const passCounts = new Map();
 const slotsFor = (key) => {
-	let slots = slotStore.get(key);
-	if (slots === void 0) { slots = []; slotStore.set(key, slots); }
-	return slots;
+	let per = slotStore.get(key);
+	if (per === void 0) { per = []; slotStore.set(key, per); }
+	const occurrence = passCounts.get(key) ?? 0;
+	passCounts.set(key, occurrence + 1);
+	if (per[occurrence] === void 0) per[occurrence] = [];
+	return per[occurrence];
 };
 const React = {
 	Fragment: Symbol("Fragment"),
@@ -89,6 +97,10 @@ const windowStub = {
 	addEventListener: () => void 0,
 	setTimeout,
 	clearTimeout,
+	// Presence mounts its children one frame in; without these stubs every
+	// modal would throw inside the effect instead of rendering.
+	requestAnimationFrame: (fn) => setTimeout(fn, 0),
+	cancelAnimationFrame: (handle) => clearTimeout(handle),
 	localStorage: {
 		getItem: (key) => (localStore.has(key) ? localStore.get(key) : null),
 		setItem: (key, value) => { localStore.set(key, String(value)); },
@@ -142,7 +154,38 @@ const detailFiles = [
 	{ path: "old.txt", added: 0, removed: 5, binary: false, status: "D" }
 ];
 const callCount = { snapshot: 0, detail: 0, file: 0, add: 0, unstage: 0 };
+/** Host-side settings the panel reads; the update call mutates this stub. */
+const settingsValue = { userName: "", userEmail: "", reflogBackup: false, showDshSettings: false, modalAnchor: "panel", devMode: false };
 const gitRemote = {
+	pluginSettings: async () => ({ ok: true, value: { ...settingsValue } }),
+	pluginSettingsUpdate: async (request) => {
+		for (const key of Object.keys(settingsValue)) if (request?.[key] !== void 0) settingsValue[key] = request[key];
+		return { ok: true, value: { ...settingsValue } };
+	},
+	githubAccounts: async () => ({ ok: true, value: { ok: true, accounts: [{ name: "LingQi-07-std" }] } }),
+	githubLoginStart: async () => ({ ok: true, value: { ok: true, id: "gh-1" } }),
+	githubLoginPoll: async () => ({ ok: true, value: { ok: true, status: "pending" } }),
+	githubLoginCancel: async () => ({ ok: true, value: { ok: true, cancelled: true } }),
+	githubLoginToken: async () => ({ ok: true, value: { ok: true, accounts: [{ name: "LingQi-07-std" }] } }),
+	githubLogout: async () => ({ ok: true, value: { ok: true, accounts: [] } }),
+	githubUser: async () => ({ ok: true, value: { ok: true, login: "LingQi-07-std", avatarUrl: "https://avatars.githubusercontent.com/u/1?v=4", reason: "", status: 200 } }),
+	repoPermission: async () => ({ ok: true, value: { ok: true, canPush: true, canPull: true, status: 200, reason: "" } }),
+	repoInfo: async () => ({ ok: true, value: { ok: true, owner: "o", repo: "r", fork: false, parent: null, defaultBranch: "main", htmlUrl: "https://github.com/o/r" } }),
+	listPullRequests: async () => ({ ok: true, value: { ok: true, prs: [] } }),
+	listAllPullRequests: async () => ({ ok: true, value: { ok: true, outgoing: [], internal: [], incoming: [] } }),
+	createPullRequest: async () => ({ ok: true, value: { ok: true, number: 1, url: "https://github.com/o/r/pull/1" } }),
+	createRepo: async () => ({ ok: true, value: { ok: true, owner: "o", fullName: "o/r", cloneUrl: "https://github.com/o/r.git" } }),
+	syncCommits: async () => ({
+		ok: true,
+		value: { ok: true, upstream: "origin/main", ahead: [], behind: [], aheadFiles: [], behindFiles: [], mergeBase: "" }
+	}),
+	remoteBranches: async () => ({ ok: true, value: { branches: [] } }),
+	linkUpstream: async () => ({ ok: true, value: { ok: true, message: "已关联" } }),
+	remoteInfo: async () => ({ ok: true, value: { ok: true, name: "origin", url: "https://github.com/o/r.git", host: "github.com", owner: "o", repo: "r", github: true } }),
+	fetchRemote: async () => ({ ok: true, value: { ok: true, message: "已更新远程状态" } }),
+	pullRemote: async () => ({ ok: true, value: { ok: true, message: "已拉取" } }),
+	pushRemote: async () => ({ ok: true, value: { ok: true, message: "已推送" } }),
+	rangeDiff: async () => ({ ok: true, value: { ok: true, from: "aaaa", to: "HEAD", files: [], patch: "", truncated: false } }),
 	snapshot: async () => { callCount.snapshot += 1; return { ok: true, value: snapshotValue }; },
 	log: async () => ({ ok: true, value: logValue }),
 	status: async () => ({ ok: true, value: statusValue }),
@@ -204,7 +247,10 @@ try {
 	});
 	apply = moduleExports.apply;
 	assert(typeof apply === "function", "exports.apply missing");
-	assert(moduleExports.inject.includes("remote.git"), "remote.git inject missing");
+	// The bundle mounts the namespace itself, so it must inject `remote` but
+	// must NOT wait for `remote.git` (that would deadlock on its own mount).
+	assert(moduleExports.inject.includes("remote"), "remote inject missing");
+	assert(!moduleExports.inject.includes("remote.git"), "remote.git must not be injected any more");
 } catch (error) {
 	results.push(`FAIL bundle load: ${error instanceof Error ? error.message : error}`);
 	failed += 1;
@@ -228,6 +274,7 @@ function renderComponent(type, props) {
 	return element;
 }
 function renderTree(node, depth = 0) {
+	if (depth === 0) passCounts.clear();
 	if (node === null || node === void 0 || typeof node === "boolean") return null;
 	if (typeof node === "string" || typeof node === "number") return node;
 	if (Array.isArray(node)) return node.map((child) => renderTree(child, depth + 1));
@@ -264,15 +311,37 @@ const flush = async () => {
 
 // ---------- mount ----------
 let EntryComponent = null;
+// Every slot the bundle registers into, keyed by `name#key-or-id`, so the
+// settings panels (plugins.*.config) cannot shadow the sidebar entry.
+const registeredSlots = new Map();
+// The bundle mounts `remote.git` itself now (the separate remote plugin is
+// gone), so the fake gateway records what was mounted and exposes it as `git`.
+let mountedRemote = null;
 const fakeCtx = {
 	slots: {
-		inject: (_name, factory) => { factory(); },
-		register: (_options, component) => { EntryComponent = component; return () => void 0; }
+		inject: (_name, factory) => factory(),
+		register: (options, component) => {
+			const id = `${options.name}#${options.key ?? options.id ?? ""}`;
+			registeredSlots.set(id, component);
+			if (options.name === "sidebar.footer.action") EntryComponent = component;
+			return () => { registeredSlots.delete(id); };
+		}
 	},
-	remote: { git: gitRemote }
+	remote: {
+		git: gitRemote,
+		$mount: async (spec) => { mountedRemote = spec; }
+	},
+	// The bundle splits into two fibers: the outer one mounts the namespace, the
+	// child `GitUiPlugin` owns the UI with `remote.git` injected. The stub runs
+	// the child immediately on the same context (which already carries `git`).
+	plugin: async (fn) => { fn(fakeCtx); },
+	effect: (fn) => { const disposer = fn(); return () => { if (typeof disposer === "function") disposer(); }; }
 };
-await check("apply registers the footer entry", async () => {
-	apply(fakeCtx);
+await check("apply mounts remote.git itself and registers the footer entry", async () => {
+	await apply(fakeCtx);
+	assert(mountedRemote !== null, "apply must mount the git Remote namespace");
+	assert(mountedRemote.package === "@dsh-external/dsh-client-ui-git", "mount must be owned by this package: " + mountedRemote.package);
+	assert(Array.isArray(mountedRemote.descriptors) && mountedRemote.descriptors.length === 60, "descriptor count: " + mountedRemote.descriptors?.length);
 	assert(typeof EntryComponent === "function", "no component registered");
 });
 
@@ -464,11 +533,13 @@ await check("clean workspace renders the centred clean state", async () => {
 		const left = findClass(opsBar[0], "dshg-opsLeft")[0];
 		assert(left !== void 0, "the fixed action group is missing");
 		const direct = left.props.children.filter((node) => node !== null && node !== void 0 && node.type === "button");
-		assert(direct.length === 5, `clean bar should offer 5 fixed actions, got ${direct.length}`);
+		assert(direct.length === 5, `clean bar should offer 5 remote actions, got ${direct.length}`);
 		assert(findClass(opsBar[0], "dshg-moreAction").some((button) => button.props.title === "回收站"), "the recycle-bin entry must stay reachable");
 		const labels = direct.map(textOf);
-		assert(labels[0] === "全部提交" && labels[1] === "全部暂存" && labels[2] === "回退修改" && labels[3] === "全部撤销" && labels[4] === "全部入栈", `fixed buttons missing: ${JSON.stringify(labels)}`);
-		assert(direct[0].props.disabled === true && direct[1].props.disabled === true && direct[2].props.disabled === true && direct[3].props.disabled === true && direct[4].props.disabled === true, "fixed buttons must be disabled on a clean tree");
+		assert(labels[0] === "推送改动" && labels[1] === "拉取改动" && labels[2].startsWith("同步改动") && labels[3].startsWith("变基推送") && labels[4] === "创建PR", `remote buttons missing: ${JSON.stringify(labels)}`);
+		// The stub reports an upstream with nothing pending, so every remote action
+		// is correctly disabled (nothing to push, pull, sync or rebase).
+		assert(direct[0].props.disabled === true && direct[1].props.disabled === true && direct[2].props.disabled === true && direct[3].props.disabled === true, "remote actions must be disabled when nothing is pending");
 	} finally {
 		gitRemote.status = previousStatus;
 		gitRemote.snapshot = previousSnapshot;
@@ -722,6 +793,532 @@ await check("dev diagnostics stay hidden until the switch is flipped", async () 
 	tree = renderTree(renderComponent(EntryComponent, entryProps));
 	assert(findClass(tree, "dshg-diag").length === 1, "diag strip should appear in dev mode");
 	dev.set(false);
+});
+
+// ---------- remote manager dialog ----------
+// Regression: `Presence` used to call `h(type, props, children)`, but `h` is
+// `jsx` and only takes two arguments, so every dialog inside it rendered as an
+// empty wrapper (the "远程管理 button does nothing" bug). Assert the dialog's
+// own card actually reaches the tree.
+await check("remote manager dialog opens from the more bar", async () => {
+	slotStore.delete(EntryComponent);
+	let tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	findClass(tree, "dshg-footerLabel")[0].props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	const bar = findClass(tree, "dshg-moreBar")[0];
+	assert(bar !== void 0, "more bar missing");
+	bar.props.onClick({ stopPropagation: () => void 0 });
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	const remoteItem = findClass(tree, "dshg-moreAction").find((node) => node.props.title === "远程管理");
+	assert(remoteItem !== void 0, "远程管理 entry missing from the more bar");
+	remoteItem.props.onClick({ stopPropagation: () => void 0 });
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	assert(findClass(tree, "dshg-moreBarOpen").length === 0, "opening a dialog must collapse the more bar");
+	const presence = findClass(tree, "dshg-presence");
+	assert(presence.length >= 1, "Presence wrapper missing: " + presence.length);
+	assert(presence.some((node) => node.props.children !== null && node.props.children !== void 0), "Presence dropped its children");
+	assert(findClass(tree, "dshg-remoteCard").length === 1, "remote manager card did not render");
+	assert(textOf(tree).includes("远程管理"), "dialog title missing");
+	// Linked repo: the card shows the four info rows and the permission result.
+	const rows = findClass(tree, "dshg-remoteLabel").map(textOf);
+	for (const label of ["远程名称", "仓库地址", "托管平台", "仓库标识"]) assert(rows.includes(label), `missing info row: ${label} (${rows.join(",")})`);
+	// No automatic probe any more: the dialog offers a button that runs it.
+	const permBtn = findClass(tree, "dshg-op").find((node) => textOf(node) === "检测推送权限");
+	assert(permBtn !== void 0, "permission check button missing");
+	permBtn.props.onClick();
+	await flush();
+	const withPerm = renderTree(renderComponent(EntryComponent, entryProps));
+	assert(textOf(withPerm).includes("此账户拥有推送权限"), "permission result missing after a manual check");
+});
+
+// ---------- more bar collapse ----------
+await check("more bar collapses the branch button instead of unmounting it", async () => {
+	slotStore.delete(EntryComponent);
+	let tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	findClass(tree, "dshg-footerLabel")[0].props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	// Earlier cases leave the bar expanded; collapse it first through the chevron.
+	if (findClass(tree, "dshg-branchSlotOut").length > 0) {
+		findClass(tree, "dshg-moreArrow")[0].props.onClick({ stopPropagation: () => void 0 });
+		tree = renderTree(renderComponent(EntryComponent, entryProps));
+	}
+	assert(findClass(tree, "dshg-branchSlot").length === 1, "branch slot missing");
+	assert(findClass(tree, "dshg-branchSlotOut").length === 0, "branch slot must be expanded by default");
+	findClass(tree, "dshg-moreBar")[0].props.onClick({ stopPropagation: () => void 0 });
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	const slots = findClass(tree, "dshg-branchSlot");
+	assert(slots.length === 1, "branch slot must stay mounted while the more bar is open");
+	assert(String(slots[0].props.className).includes("dshg-branchSlotOut"), "branch slot should collapse with the bar");
+	assert(findClass(slots[0], "dshg-opIcon").length === 1, "branch button must survive inside the collapsed slot");
+	findClass(tree, "dshg-moreArrow")[0].props.onClick({ stopPropagation: () => void 0 });
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	assert(findClass(tree, "dshg-branchSlotOut").length === 0, "branch slot must reopen with the bar");
+});
+
+// Regression: the exit state used to carry `transform: translateY(-6px)`, which
+// made the wrapper the containing block of the absolutely positioned dialog
+// inside it, so dialogs jumped to the bottom of the panel while fading out.
+await check("presence exit is opacity-only so dialogs keep their position", async () => {
+	const css = String(styleTag.textContent ?? "");
+	const rule = css.match(/\.dshg-presenceOut\{[^}]*\}/);
+	assert(rule !== null, "presenceOut rule missing from the injected CSS");
+	assert(!rule[0].includes("transform"), "presenceOut must not transform: " + rule[0]);
+});
+
+// ---------- create PR dialog ----------
+await check("PR dialog shows source, target branch, account and unpushed warning", async () => {
+	const prevStatus = gitRemote.status;
+	const prevSnapshot = gitRemote.snapshot;
+	const prevSync = gitRemote.syncCommits;
+	const prevCreate = gitRemote.createPullRequest;
+	let lastCreate = null;
+	gitRemote.status = async () => ({ ok: true, value: { clean: true, entries: [] } });
+	gitRemote.snapshot = async () => ({
+		ok: true,
+		value: { ...snapshotValue, branch: "feat/pr-demo", clean: true, changes: { staged: 0, unstaged: 0, untracked: 0, total: 0 }, ahead: 2, behind: 0 }
+	});
+	gitRemote.syncCommits = async () => ({
+		ok: true,
+		value: { ok: true, upstream: "origin/main", ahead: [{ hash: "a" }, { hash: "b" }], behind: [], aheadFiles: [], behindFiles: [], mergeBase: "" }
+	});
+	gitRemote.createPullRequest = async (request) => {
+		lastCreate = request;
+		return { ok: true, value: { ok: true, number: 7, url: "https://github.com/o/r/pull/7" } };
+	};
+	slotStore.delete(EntryComponent);
+	let tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	findClass(tree, "dshg-footerLabel")[0].props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	const create = findClass(tree, "dshg-op").find((node) => textOf(node) === "创建PR");
+	assert(create !== void 0, "创建PR button missing: " + findClass(tree, "dshg-op").map(textOf).join("|"));
+	create.props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	for (let pass = 0; pass < 4; pass += 1) {
+		await flush();
+		tree = renderTree(renderComponent(EntryComponent, entryProps));
+	}
+	const card = findClass(tree, "dshg-prCreateCard")[0];
+	assert(card !== void 0, "create PR dialog missing; cards=" + findClass(tree, "dshg-modalCard").map((node) => node.props.className).join(" | "));
+	const text = textOf(card);
+	for (const label of ["源分支", "目标仓库", "目标分支", "推送账户"]) assert(text.includes(label), `missing field: ${label}`);
+	assert(text.includes("feat/pr-demo"), "source branch not shown");
+	assert(text.includes("o/r"), "source repo not shown");
+	assert(text.includes("2 个提交未推送"), "unpushed warning missing: " + text);
+	// Empty title must disable submit.
+	const titleInput = findClass(card, "dshg-setInput").find((node) => node.props.placeholder === "标题（必填）");
+	assert(titleInput !== void 0, "title input missing");
+	titleInput.props.onChange({ target: { value: "" } });
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	const blocked = findClass(tree, "dshg-op").find((node) => textOf(node) === "创建 PR");
+	assert(blocked !== void 0 && blocked.props.disabled === true, "empty title must disable submit (found=" + (blocked === void 0 ? "none" : textOf(blocked) + " disabled=" + blocked.props.disabled) + ", input=" + titleInput.props.placeholder + ")");
+	// With a title the request carries owner:branch as head and the chosen base.
+	const card2 = findClass(tree, "dshg-prCreateCard")[0];
+	const title2 = findClass(card2, "dshg-setInput").find((node) => node.props.placeholder === "标题（必填）");
+	title2.props.onChange({ target: { value: "test pr" } });
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	const submit = findClass(tree, "dshg-op").find((node) => textOf(node) === "创建 PR");
+	assert(submit !== void 0 && submit.props.disabled !== true, "submit should be enabled with a title");
+	submit.props.onClick();
+	await flush();
+	assert(lastCreate !== null, "createPullRequest not called");
+	assert(lastCreate.options.head === "o:feat/pr-demo", "head must be owner:branch, got " + lastCreate.options.head);
+	assert(lastCreate.options.base === "main", "base branch wrong: " + lastCreate.options.base);
+	assert(lastCreate.account === "LingQi-07-std", "account not passed: " + lastCreate.account);
+	gitRemote.status = prevStatus;
+	gitRemote.snapshot = prevSnapshot;
+	gitRemote.syncCommits = prevSync;
+	gitRemote.createPullRequest = prevCreate;
+});
+
+// ---------- push panel ----------
+await check("push panel lists commits, probes permission and pushes with the chosen account", async () => {
+	const prevStatus = gitRemote.status;
+	const prevSnapshot = gitRemote.snapshot;
+	const prevSync = gitRemote.syncCommits;
+	const prevPush = gitRemote.pushRemote;
+	const prevPerm = gitRemote.repoPermission;
+	let lastPush = null;
+	let permProbes = 0;
+	gitRemote.status = async () => ({ ok: true, value: { clean: true, entries: [] } });
+	gitRemote.snapshot = async () => ({
+		ok: true,
+		value: { ...snapshotValue, branch: "feat/push", clean: true, changes: { staged: 0, unstaged: 0, untracked: 0, total: 0 }, ahead: 1, behind: 0 }
+	});
+	gitRemote.syncCommits = async () => ({
+		ok: true,
+		value: { ok: true, upstream: "origin/feat/push", ahead: [{ hash: "aaa111", short: "aaa111", subject: "feat: one", author: "Arona" }], behind: [], aheadFiles: [{ path: "a.js" }], behindFiles: [], mergeBase: "" }
+	});
+	gitRemote.pushRemote = async (request) => { lastPush = request; return { ok: true, value: { ok: true, message: "已推送" } }; };
+	gitRemote.repoPermission = async () => { permProbes += 1; return { ok: true, value: { ok: true, canPush: true, canPull: true, status: 200, reason: "" } }; };
+	slotStore.delete(EntryComponent);
+	let tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	findClass(tree, "dshg-footerLabel")[0].props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	const pushOp = findClass(tree, "dshg-op").find((node) => textOf(node).startsWith("推送改动"));
+	assert(pushOp !== void 0, "推送改动 button missing");
+	pushOp.props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	for (let pass = 0; pass < 3; pass += 1) {
+		await flush();
+		tree = renderTree(renderComponent(EntryComponent, entryProps));
+	}
+	const card = findClass(tree, "dshg-pushCard")[0];
+	assert(card !== void 0, "push panel missing");
+	const text = textOf(card);
+	assert(text.includes("feat/push"), "branch missing: " + text.slice(0, 120));
+	assert(text.includes("feat: one"), "commit list missing");
+	assert(text.includes("此账户拥有推送权限"), "automatic permission probe missing");
+	assert(permProbes >= 1, "repoPermission not called");
+	const select = findClass(card, "dshg-setSelect")[0];
+	assert(select !== void 0, "account picker missing");
+	select.props.onChange({ target: { value: "Other-Account" } });
+	await flush();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	assert(permProbes >= 2, "switching account must re-check permission");
+	const submit = findClass(tree, "dshg-op").find((node) => textOf(node) === "推送");
+	assert(submit !== void 0 && submit.props.disabled !== true, "push submit should be enabled");
+	submit.props.onClick();
+	await flush();
+	assert(lastPush !== null, "pushRemote not called");
+	assert(lastPush.branch === "feat/push", "branch wrong: " + lastPush.branch);
+	assert(lastPush.remote === "origin", "remote wrong: " + lastPush.remote);
+	assert(lastPush.account === "Other-Account", "account not passed: " + lastPush.account);
+	// Force push colours both text and frame.
+	assert(String(styleTag.textContent ?? "").includes(".dshg-opPrimary.dshg-opDanger"), "danger border override missing");
+	gitRemote.status = prevStatus;
+	gitRemote.snapshot = prevSnapshot;
+	gitRemote.syncCommits = prevSync;
+	gitRemote.pushRemote = prevPush;
+	gitRemote.repoPermission = prevPerm;
+});
+
+// ---------- pull dialog ----------
+await check("pull dialog lists incoming commits and pulls on confirm", async () => {
+	const prevStatus = gitRemote.status;
+	const prevSnapshot = gitRemote.snapshot;
+	const prevSync = gitRemote.syncCommits;
+	const prevPull = gitRemote.pullRemote;
+	let pulled = 0;
+	gitRemote.status = async () => ({ ok: true, value: { clean: true, entries: [] } });
+	gitRemote.snapshot = async () => ({
+		ok: true,
+		value: { ...snapshotValue, branch: "feat/pull", clean: true, changes: { staged: 0, unstaged: 0, untracked: 0, total: 0 }, ahead: 0, behind: 1 }
+	});
+	gitRemote.syncCommits = async () => ({
+		ok: true,
+		value: { ok: true, upstream: "origin/feat/pull", ahead: [], behind: [{ hash: "b111", short: "b111", subject: "fix: incoming", author: "Bob" }], aheadFiles: [], behindFiles: [{ path: "b.js" }], mergeBase: "" }
+	});
+	gitRemote.pullRemote = async () => { pulled += 1; return { ok: true, value: { ok: true, message: "已拉取" } }; };
+	slotStore.delete(EntryComponent);
+	let tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	findClass(tree, "dshg-footerLabel")[0].props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	const pullOp = findClass(tree, "dshg-op").find((node) => textOf(node).startsWith("拉取改动"));
+	assert(pullOp !== void 0, "拉取改动 button missing");
+	pullOp.props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	for (let pass = 0; pass < 3; pass += 1) {
+		await flush();
+		tree = renderTree(renderComponent(EntryComponent, entryProps));
+	}
+	const card = findClass(tree, "dshg-pullCard")[0];
+	assert(card !== void 0, "pull dialog missing");
+	const text = textOf(card);
+	assert(text.includes("fix: incoming"), "incoming commit missing: " + text.slice(0, 120));
+	assert(text.includes("即将拉取"), "pull section title missing");
+	const confirm = findClass(tree, "dshg-op").find((node) => textOf(node) === "拉取");
+	assert(confirm !== void 0 && confirm.props.disabled !== true, "pull confirm missing or disabled");
+	confirm.props.onClick();
+	await flush();
+	assert(pulled === 1, "pullRemote not called");
+	gitRemote.status = prevStatus;
+	gitRemote.snapshot = prevSnapshot;
+	gitRemote.syncCommits = prevSync;
+	gitRemote.pullRemote = prevPull;
+});
+
+// ---------- sync mode ----------
+await check("sync mode shows both sides and pulls before pushing", async () => {
+	const prevStatus = gitRemote.status;
+	const prevSnapshot = gitRemote.snapshot;
+	const prevSync = gitRemote.syncCommits;
+	const prevPull = gitRemote.pullRemote;
+	const prevPush = gitRemote.pushRemote;
+	const order = [];
+	gitRemote.status = async () => ({ ok: true, value: { clean: true, entries: [] } });
+	gitRemote.snapshot = async () => ({
+		ok: true,
+		value: { ...snapshotValue, branch: "feat/sync", clean: true, changes: { staged: 0, unstaged: 0, untracked: 0, total: 0 }, ahead: 1, behind: 1 }
+	});
+	gitRemote.syncCommits = async () => ({
+		ok: true,
+		value: {
+			ok: true,
+			upstream: "origin/feat/sync",
+			ahead: [{ hash: "c111", short: "c111", subject: "feat: outgoing", author: "Arona" }],
+			behind: [{ hash: "d111", short: "d111", subject: "fix: incoming", author: "Bob" }],
+			aheadFiles: [{ path: "c.js" }],
+			behindFiles: [{ path: "d.js" }],
+			mergeBase: ""
+		}
+	});
+	gitRemote.pullRemote = async () => { order.push("pull"); return { ok: true, value: { ok: true, message: "已拉取" } }; };
+	gitRemote.pushRemote = async () => { order.push("push"); return { ok: true, value: { ok: true, message: "已推送" } }; };
+	slotStore.delete(EntryComponent);
+	let tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	findClass(tree, "dshg-footerLabel")[0].props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	const syncOp = findClass(tree, "dshg-op").find((node) => textOf(node).startsWith("同步改动"));
+	assert(syncOp !== void 0, "同步改动 button missing");
+	syncOp.props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	for (let pass = 0; pass < 3; pass += 1) {
+		await flush();
+		tree = renderTree(renderComponent(EntryComponent, entryProps));
+	}
+	const card = findClass(tree, "dshg-pushCard")[0];
+	assert(card !== void 0, "sync dialog missing");
+	const text = textOf(card);
+	assert(text.includes("同步改动"), "sync title missing");
+	assert(text.includes("即将拉取") && text.includes("即将推送"), "both sections expected: " + text.slice(0, 160));
+	assert(text.includes("fix: incoming") && text.includes("feat: outgoing"), "both commit lists expected");
+	const run = findClass(tree, "dshg-op").find((node) => textOf(node) === "同步");
+	assert(run !== void 0 && run.props.disabled !== true, "sync confirm missing or disabled");
+	run.props.onClick();
+	await flush();
+	assert(order.join(",") === "pull,push", "sync order wrong: " + order.join(","));
+	gitRemote.status = prevStatus;
+	gitRemote.snapshot = prevSnapshot;
+	gitRemote.syncCommits = prevSync;
+	gitRemote.pullRemote = prevPull;
+	gitRemote.pushRemote = prevPush;
+});
+
+// ---------- rebase + push ----------
+await check("rebase panel backs up, rebases and force-pushes in one go", async () => {
+	const prevStatus = gitRemote.status;
+	const prevSnapshot = gitRemote.snapshot;
+	const prevSync = gitRemote.syncCommits;
+	const prevRebase = gitRemote.rebase;
+	const prevCreateBranch = gitRemote.createBranch;
+	const prevPush = gitRemote.pushRemote;
+	const order = [];
+	gitRemote.status = async () => ({ ok: true, value: { clean: true, entries: [] } });
+	gitRemote.snapshot = async () => ({
+		ok: true,
+		value: { ...snapshotValue, branch: "feat/rb", clean: true, changes: { staged: 0, unstaged: 0, untracked: 0, total: 0 }, ahead: 1, behind: 1 }
+	});
+	gitRemote.syncCommits = async () => ({
+		ok: true,
+		value: {
+			ok: true,
+			upstream: "origin/main",
+			ahead: [{ hash: "e111", short: "e111", subject: "feat: local work", author: "Arona" }],
+			behind: [{ hash: "f111", short: "f111", subject: "fix: remote work", author: "Bob" }],
+			aheadFiles: [],
+			behindFiles: [],
+			mergeBase: ""
+		}
+	});
+	gitRemote.createBranch = async (request) => { order.push("backup:" + String(request.name).startsWith("backup/")); return { ok: true, value: { ok: true, message: "created" } }; };
+	gitRemote.rebase = async () => { order.push("rebase"); return { ok: true, value: { ok: true, message: "已变基" } }; };
+	gitRemote.pushRemote = async (request) => { order.push("push:" + (request.force === true)); return { ok: true, value: { ok: true, message: "已推送" } }; };
+	slotStore.delete(EntryComponent);
+	let tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	findClass(tree, "dshg-footerLabel")[0].props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	const rbOp = findClass(tree, "dshg-op").find((node) => textOf(node).startsWith("变基推送"));
+	assert(rbOp !== void 0, "变基推送 button missing");
+	rbOp.props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	for (let pass = 0; pass < 3; pass += 1) {
+		await flush();
+		tree = renderTree(renderComponent(EntryComponent, entryProps));
+	}
+	const card = findClass(tree, "dshg-pushCard")[0];
+	assert(card !== void 0, "rebase dialog missing");
+	// A sync dialog may still be fading out at an earlier slot; check the whole tree.
+	const text = textOf(tree);
+	assert(text.includes("将被重写的提交"), "rebase dialog body missing");
+	assert(text.includes("feat: local work"), "rewritten commit missing");
+	assert(text.includes("--force-with-lease"), "forced push notice missing");
+	assert(text.includes("此账户拥有推送权限"), "permission probe missing");
+	const go = findClass(tree, "dshg-op").find((node) => textOf(node) === "变基推送");
+	assert(go !== void 0 && go.props.disabled !== true, "rebase confirm missing or disabled");
+	go.props.onClick();
+	await flush();
+	assert(order.join(",") === "backup:true,rebase,push:true", "rebase pipeline order wrong: " + order.join(","));
+	gitRemote.status = prevStatus;
+	gitRemote.snapshot = prevSnapshot;
+	gitRemote.syncCommits = prevSync;
+	gitRemote.rebase = prevRebase;
+	gitRemote.createBranch = prevCreateBranch;
+	gitRemote.pushRemote = prevPush;
+});
+
+// ---------- force push confirmation ----------
+await check("force push asks for confirmation before pushing", async () => {
+	const prevStatus = gitRemote.status;
+	const prevSnapshot = gitRemote.snapshot;
+	const prevSync = gitRemote.syncCommits;
+	const prevPush = gitRemote.pushRemote;
+	let pushed = 0;
+	gitRemote.status = async () => ({ ok: true, value: { clean: true, entries: [] } });
+	gitRemote.snapshot = async () => ({
+		ok: true,
+		value: { ...snapshotValue, branch: "feat/force", clean: true, changes: { staged: 0, unstaged: 0, untracked: 0, total: 0 }, ahead: 1, behind: 0 }
+	});
+	gitRemote.syncCommits = async () => ({
+		ok: true,
+		value: { ok: true, upstream: "origin/feat/force", ahead: [{ hash: "g111", short: "g111", subject: "feat: force case", author: "Arona" }], behind: [], aheadFiles: [], behindFiles: [], mergeBase: "" }
+	});
+	gitRemote.pushRemote = async () => { pushed += 1; return { ok: true, value: { ok: true, message: "已推送" } }; };
+	slotStore.delete(EntryComponent);
+	let tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	findClass(tree, "dshg-footerLabel")[0].props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	findClass(tree, "dshg-op").find((node) => textOf(node).startsWith("推送改动")).props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	for (let pass = 0; pass < 3; pass += 1) {
+		await flush();
+		tree = renderTree(renderComponent(EntryComponent, entryProps));
+	}
+	const card = findClass(tree, "dshg-pushCard")[0];
+	assert(card !== void 0, "push panel missing");
+	const check = findClass(card, "dshg-remoteCheck")[0];
+	assert(check !== void 0, "force checkbox missing");
+	check.props.children[0].props.onChange({ target: { checked: true } });
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	findClass(tree, "dshg-op").find((node) => textOf(node) === "推送").props.onClick();
+	await flush();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	assert(pushed === 0, "force push must not run before confirmation");
+	const confirm = findClass(tree, "dshg-confirmCard")[0];
+	assert(confirm !== void 0, "confirmation dialog missing");
+	const okBtn = findClass(confirm, "dshg-op").find((node) => textOf(node) === "强制推送");
+	assert(okBtn !== void 0, "confirm button missing");
+	okBtn.props.onClick();
+	await flush();
+	assert(pushed === 1, "force push not executed after confirmation");
+	gitRemote.status = prevStatus;
+	gitRemote.snapshot = prevSnapshot;
+	gitRemote.syncCommits = prevSync;
+	gitRemote.pushRemote = prevPush;
+});
+
+// ---------- retired PR row + bare list ----------
+await check("clean state owns no PR row, and the bare PR list is not collapsed", async () => {
+	const prevStatus = gitRemote.status;
+	const prevSnapshot = gitRemote.snapshot;
+	gitRemote.status = async () => ({ ok: true, value: { clean: true, entries: [] } });
+	gitRemote.snapshot = async () => ({
+		ok: true,
+		value: { ...snapshotValue, clean: true, changes: { staged: 0, unstaged: 0, untracked: 0, total: 0 }, ahead: 0, behind: 0 }
+	});
+	slotStore.delete(EntryComponent);
+	let tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	findClass(tree, "dshg-footerLabel")[0].props.onClick();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	await flush();
+	tree = renderTree(renderComponent(EntryComponent, entryProps));
+	const block = findClass(tree, "dshg-cleanBlock")[0];
+	assert(block !== void 0, "clean block missing");
+	const kids = (Array.isArray(block.props.children) ? block.props.children : [block.props.children]).filter(Boolean);
+	assert(kids.length === 1, "clean block must only contain the clean state, got " + kids.length + " children");
+	assert(findClass(tree, "dshg-bubblePr").length === 0, "the retired PR row must not come back");
+	// Bare mode rides on the collapsed-list class; the 0fr row must be overridden.
+	const css = String(styleTag.textContent ?? "");
+	const bare = css.match(/\.dshg-prListBodyBare\{[^}]*\}/);
+	assert(bare !== null, "bare PR list rule missing");
+	assert(bare[0].includes("grid-template-rows:1fr"), "bare PR list must expand its grid row: " + bare[0]);
+	gitRemote.status = prevStatus;
+	gitRemote.snapshot = prevSnapshot;
+});
+
+// ---------- settings panel ----------
+const ROW_PANEL_KEY = "plugins.row.config#@dsh-external/dsh-client-ui-git#ui-git";
+const BUNDLE_PANEL_KEY = "plugins.bundle.config#@dsh-external/dsh-client-ui-git";
+
+await check("settings panel registers on the plugin page (row + bundle)", async () => {
+	assert(typeof registeredSlots.get(ROW_PANEL_KEY) === "function", "plugins.row.config must be registered with the package#row id key");
+	assert(typeof registeredSlots.get(BUNDLE_PANEL_KEY) === "function", "plugins.bundle.config must be registered with the package name key");
+});
+
+await check("settings panel summary is one plain sentence", async () => {
+	const Panel = registeredSlots.get(ROW_PANEL_KEY);
+	const tree = renderTree(renderComponent(Panel, { view: "summary" }));
+	const summary = textOf(tree);
+	assert(summary.includes("reflog 备份"), "summary should mention the reflog switch: " + summary);
+	assert(findClass(tree, "dshg-setSwitch").length === 0, "summary must not render controls");
+});
+
+await check("settings panel page renders its sections and controls", async () => {
+	const Panel = registeredSlots.get(ROW_PANEL_KEY);
+	const form = { state: { status: "ready", value: { ...settingsValue }, revision: 3, writable: true }, mutate: async () => true };
+	let tree = renderTree(renderComponent(Panel, { view: "page", form }));
+	await flush();
+	tree = renderTree(renderComponent(Panel, { view: "page", form }));
+	const text = textOf(tree);
+	for (const title of ["提交身份", "面板与集成", "数据", "GitHub"]) assert(text.includes(title), `missing section: ${title}`);
+	assert(findClass(tree, "dshg-setInput").length === 6, "six inputs expected");
+	assert(findClass(tree, "dshg-setSwitch").length === 6, "six switches expected (DSH settings, reflog backup, dev strip, remote hint, allow create repo, PR in more)");
+	assert(findClass(tree, "dshg-setSelect").length === 1, "dialog-anchor select expected");
+	// GitHub section: the account list is collapsed by default; the header must exist
+	// and name the active account.
+	assert(findClass(tree, "dshg-setAccountsHead").length === 1, "account section header expected");
+	assert(text.includes("当前账户："), "account header text expected");
+	assert(text.includes("打开浏览器登录"), "browser-login button expected");
+});
+
+await check("settings panel toggle persists through the host half", async () => {
+	const Panel = registeredSlots.get(ROW_PANEL_KEY);
+	const form = { state: { status: "ready", value: { ...settingsValue }, revision: 4, writable: true }, mutate: async () => true };
+	let tree = renderTree(renderComponent(Panel, { view: "page", form }));
+	await flush();
+	tree = renderTree(renderComponent(Panel, { view: "page", form }));
+	const switches = findClass(tree, "dshg-setSwitch");
+	switches[0].props.onClick();
+	await flush();
+	assert(settingsValue.showDshSettings === true, "toggle must write showDshSettings through pluginSettingsUpdate");
+	assert(registeredSlots.has("settings.section#git-settings"), "DSH settings section must appear once the switch is on");
+	// Turning it off again must unregister the section (no orphan nav entry).
+	const after = renderTree(renderComponent(Panel, { view: "page", form }));
+	const again = findClass(after, "dshg-setSwitch");
+	again[0].props.onClick();
+	await flush();
+	assert(settingsValue.showDshSettings === false, "second toggle must clear showDshSettings");
+	assert(!registeredSlots.has("settings.section#git-settings"), "DSH settings section must disappear when the switch is off");
 });
 
 console.log(results.join("\n"));

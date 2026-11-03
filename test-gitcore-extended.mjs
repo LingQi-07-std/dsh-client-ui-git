@@ -402,6 +402,62 @@ try {
 		if (!threw) throw new Error("bad name accepted");
 	});
 
+	// ---- remote sync: pending commits, whole-chain files, remote branches ----
+	await checkAsync("syncCommits reports ahead/behind commits and whole-chain files", async () => {
+		const bare = join(root, "remote.git");
+		spawnSync("git", ["init", "-q", "--bare", "-b", "main", bare], { stdio: "pipe" });
+		const local = makeRepo("sync-local");
+		writeFileSync(join(local, "a.txt"), "one\n");
+		sh(local, "add", "a.txt");
+		sh(local, "commit", "-qm", "first");
+		sh(local, "remote", "add", "origin", bare);
+		sh(local, "push", "-q", "-u", "origin", "main");
+
+		// Remote branches: exactly one, and it is tracked by the local `main`.
+		const linked = await git.remoteBranches(local);
+		if (linked.branches.length !== 1) throw new Error("expected 1 remote branch, got " + JSON.stringify(linked.branches.map((b) => b.name)));
+		if (linked.branches[0].name !== "origin/main") throw new Error("remote branch name: " + linked.branches[0].name);
+		if (linked.branches[0].trackedBy !== "main") throw new Error("trackedBy: " + linked.branches[0].trackedBy);
+
+		// Local-only commit -> ahead 1, one added file.
+		writeFileSync(join(local, "b.txt"), "two\n");
+		sh(local, "add", "b.txt");
+		sh(local, "commit", "-qm", "local only");
+		let sync = await git.syncCommits(local);
+		if (sync.upstream !== "origin/main") throw new Error("upstream: " + sync.upstream);
+		if (sync.ahead.length !== 1 || sync.behind.length !== 0) throw new Error("ahead/behind: " + JSON.stringify(sync));
+		if (sync.ahead[0].subject !== "local only") throw new Error("ahead subject: " + sync.ahead[0].subject);
+		if (sync.aheadFiles.length !== 1 || sync.aheadFiles[0].path !== "b.txt") throw new Error("aheadFiles: " + JSON.stringify(sync.aheadFiles));
+		if (sync.aheadFiles[0].status !== "A") throw new Error("file status: " + sync.aheadFiles[0].status);
+
+		// A second clone pushes -> behind 1 after fetch.
+		const other = join(root, "sync-other");
+		spawnSync("git", ["clone", "-q", bare, other], { stdio: "pipe" });
+		spawnSync("git", ["-C", other, "config", "user.email", "t@t.t"], { stdio: "pipe" });
+		spawnSync("git", ["-C", other, "config", "user.name", "Tester"], { stdio: "pipe" });
+		writeFileSync(join(other, "c.txt"), "three\n");
+		sh(other, "add", "c.txt");
+		sh(other, "commit", "-qm", "remote only");
+		sh(other, "push", "-q", "origin", "main");
+		sh(local, "fetch", "-q", "origin");
+		sync = await git.syncCommits(local);
+		if (sync.behind.length !== 1) throw new Error("behind: " + JSON.stringify(sync.behind));
+		if (sync.behind[0].subject !== "remote only") throw new Error("behind subject: " + sync.behind[0].subject);
+		if (sync.behindFiles.length !== 1 || sync.behindFiles[0].path !== "c.txt") throw new Error("behindFiles: " + JSON.stringify(sync.behindFiles));
+		if (sync.mergeBase.length !== 8) throw new Error("mergeBase: " + sync.mergeBase);
+	});
+
+	await checkAsync("syncCommits reports an unlinked branch as empty", async () => {
+		const lonely = makeRepo("sync-lonely");
+		writeFileSync(join(lonely, "x.txt"), "x\n");
+		sh(lonely, "add", "x.txt");
+		sh(lonely, "commit", "-qm", "only");
+		const sync = await git.syncCommits(lonely);
+		if (sync.upstream !== "") throw new Error("upstream should be empty: " + sync.upstream);
+		if (sync.ahead.length !== 0 || sync.behind.length !== 0) throw new Error("lists should be empty");
+		if (sync.aheadFiles.length !== 0 || sync.behindFiles.length !== 0) throw new Error("file lists should be empty");
+	});
+
 	console.log(results.join("\n"));
 	console.log(process.exitCode === 1 ? "\nSOME EXTENDED CHECKS FAILED" : "\nALL EXTENDED CHECKS PASSED");
 } finally {

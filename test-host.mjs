@@ -97,6 +97,44 @@ try {
 	if (!applied.ok) throw new Error("stash apply failed: " + JSON.stringify(applied));
 	const dropped = await gateway.stash({ path: dir, action: "drop", ref: listed.entries[0].ref });
 	if (!dropped.ok) throw new Error("stash drop failed: " + JSON.stringify(dropped));
+	// Settings panel: defaults, partial writes, and the commit identity they feed.
+	const defaults = await gateway.pluginSettings({});
+	if (defaults.userName !== "" || defaults.userEmail !== "" || defaults.reflogBackup !== false || defaults.showDshSettings !== false || defaults.modalAnchor !== "panel" || defaults.devMode !== false) {
+		throw new Error("settings defaults wrong: " + JSON.stringify(defaults));
+	}
+	const saved = await gateway.pluginSettingsUpdate({ userName: "阿罗娜", showDshSettings: true });
+	if (saved.userName !== "阿罗娜" || saved.showDshSettings !== true) throw new Error("settings write failed: " + JSON.stringify(saved));
+	// A partial write must not clear the fields it does not mention.
+	const partial = await gateway.pluginSettingsUpdate({ modalAnchor: "screen" });
+	if (partial.userName !== "阿罗娜" || partial.showDshSettings !== true || partial.modalAnchor !== "screen") {
+		throw new Error("partial settings write clobbered values: " + JSON.stringify(partial));
+	}
+	const reread = await gateway.pluginSettings({});
+	if (reread.userName !== "阿罗娜" || reread.modalAnchor !== "screen") throw new Error("settings did not persist: " + JSON.stringify(reread));
+	// The identity only fills gaps: isolate the machine's global git config and
+	// drop the repo-local identity so the configured fallback is the only source.
+	const emptyGitConfig = join(dir, ".empty-gitconfig");
+	writeFileSync(emptyGitConfig, "");
+	process.env.GIT_CONFIG_GLOBAL = emptyGitConfig;
+	process.env.GIT_CONFIG_SYSTEM = emptyGitConfig;
+	sh("config", "--unset", "user.name");
+	sh("config", "--unset", "user.email");
+	writeFileSync(join(dir, "identity-probe.txt"), "who\n");
+	const identityCommit = await gateway.commit({ path: dir, message: "identity probe", paths: ["identity-probe.txt"] });
+	if (!identityCommit.ok) throw new Error("identity commit failed: " + JSON.stringify(identityCommit));
+	const author = sh("log", "-1", "--format=%an|%ae").stdout.toString().trim();
+	if (author !== "阿罗娜|dsh@local") throw new Error("configured identity not used: " + author);
+	delete process.env.GIT_CONFIG_GLOBAL;
+	delete process.env.GIT_CONFIG_SYSTEM;
+	// GitHub auth: shape-only assertions (a machine without GCM legitimately
+	// reports ok:false with an error, which must not fail this suite).
+	const accounts = await gateway.githubAccounts({});
+	if (typeof accounts.ok !== "boolean" || !Array.isArray(accounts.accounts)) throw new Error("githubAccounts shape wrong: " + JSON.stringify(accounts));
+	if (accounts.ok === false && typeof accounts.error !== "string") throw new Error("githubAccounts must explain a failure");
+	if (accounts.ok === true) for (const account of accounts.accounts) if (typeof account.name !== "string" || account.name.length === 0) throw new Error("account row without a name");
+	// Token login rejects an empty token without touching GCM.
+	const emptyToken = await gateway.githubLoginToken({ token: "   " });
+	if (emptyToken.ok !== false) throw new Error("empty token must be rejected: " + JSON.stringify(emptyToken));
 	delete process.env.DSH_GIT_STATE_DIR;
 	console.log("\nALL HOST CHECKS PASSED");
 } finally {

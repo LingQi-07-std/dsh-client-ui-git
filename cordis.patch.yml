@@ -1,7 +1,7 @@
 # @dsh-external/dsh-client-ui-git bundle patch: registers the git visualizer row.
 # The host half serves the `git` Remote (snapshot/log/status/diff + safe writes)
-# through its typert manifest; the browser half renders the sidebar git panel.
-# Requires the `git-remote` bundle row to be enabled as well.
+# through its typert manifest; the browser half mounts that namespace itself and
+# renders the sidebar git panel. Self-contained: no companion bundle row needed.
 - insert:
     - id: ui-git
       name: '@dsh-external/dsh-client-ui-git'

@@ -1,6 +1,0 @@
-{
-  "meta": {
-    "title": "Git Remote 挂载",
-    "description": "在客户端网关上挂载 host 的 git Remote 命名空间；Git 面板依赖它。"
-  }
-}

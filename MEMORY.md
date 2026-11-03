@@ -101,3 +101,80 @@
 - 为什么不在 localStorage：卸载插件后浏览器里仍有残留、不同浏览器/工作区不统一；为什么不在工作区：会污染仓库。
 - 写入用临时文件 + rename，写操作串行排队；失败不污染队列。
 - 测试用 `DSH_GIT_STATE_DIR` 指向临时目录，避免测试数据写进插件目录。
+
+## 16. 设置面板（2026-11-01 实测）
+
+- 插件页两个注册点 key 写错**不会报错**，面板只是永远不出现：`plugins.bundle.config` 用包名，`plugins.row.config` 用 `<包名>#<cordis.patch.yml 行 id>`（本插件行 id = `ui-git`）。
+- `plugins.bundle.config` 的 renderSlot 只传 `{ view }`，**没有 `form`**；`props.form.mutate(...)` 会直接 TypeError。本插件改成两个页面都从宿主读值，`form` 只做尽力同步。
+- 行配置的 `form.mutate` **不保证**写进 profile patch（主题插件的开关「弹回」就是这么来的），所以设置的唯一真源放在 `.data/state.json` 的 `settings` 键；`Config` 只提供默认值与行页 form 的投影。
+- `Config` 的命名空间是**行 id**，不是包名；cordis 校验读 `runtime.Config`，而 runtime 可能是模块命名空间也可能是构造函数，所以 `export const Config` 之外还要 `GitGateway.Config = Config`。
+- 设置类方法的请求里**不要带 `path`**：面板在没仓库时也要能读，`reqShaped` 强制 `path: z.string()` 会逼客户端传假路径。加 `reqBare`。
+- `settings.section` 的注册必须用 `ctx.slots.inject` 包住，且 `inject` 的返回值才是能销毁注册的 disposer（不是 `register` 的返回值）；测试桩里把 `inject` 写成「调完 factory 就返回空函数」会让开关「关不掉」。
+- `apply` 里别裸用 `ctx.effect`：离线测试桩没有它，一次抛错会让整个 apply 中断（后续注册全丢）。要么判空，要么给桩补上。
+- 离线测试的 `slots.register` 若只记最后一个组件，后注册的 `plugins.*.config` 会把侧栏入口覆盖掉——按 `name#key` 存表。
+
+## 17. PowerShell 写文件会毁 UTF-8（2026-11-01）
+
+- `Out-File -Encoding utf8NoBOM` 在 Windows PowerShell 5.1 直接报参数校验失败；`Set-Content` 走默认编码，会把 `—`（E2 80 94）写成 `E2 80 3F`，文件随后**不是合法 UTF-8**，`read` 工具直接拒绝读取。
+- 症状：`read` 报 `invalid UTF-8 text`；node 用 utf8 解码得到 `\uFFFD`。
+- 修复：node 按字节把 `E2 80 3F` 换回 `E2 80 94`（顺带补回被吞掉的空格），再用 `TextDecoder('utf-8',{fatal:true})` 验证。
+- 结论：改任何源码/文档只用 read/edit/write 工具，PowerShell 只用来跑命令和 robocopy。
+
+## 18. 把「挂载插件」并进主插件（2026-11-01）
+
+- 原来的 `dsh-client-git-remote` 只做一件事：`ctx.remote.$mount(TYPERT_REMOTE)`。合并进主 bundle 后，`apply` 必须是 `async`，且 `await $mount` 要放在**任何** `ctx.remote.git` 读取之前。
+- 关键陷阱：`exports.inject`（外层 fiber）必须把 `"remote.git"` 删掉，只留 `["remote"]`。留着会变成「等自己提供的服务」，cordis 永远等不到，插件不激活（表现是侧栏入口消失 / 插件页报 `cannot get property "remote.git" without inject`）。UI 放进子 fiber `GitUiPlugin`，由它 inject `remote.git`，详见 18.1。
+- descriptor 的 `id` 原本就用主包名（`${PKG}#git/<method>`），所以合并时只需把 `TYPERT_REMOTE.package` 从 remote 包名改成 `PKG`；不动 id，host manifest 那边零改动。
+- remote 包自带一份极简 zod（`parse` 语义，不 require 任何模块），整段搬进来即可，不必让主 bundle 去 require `zod`。
+- 挂载失败不要中断激活：`catch` 里写 `store.clientError` 再继续注册 UI，否则一次挂载异常会让整个面板静默消失。
+- 清理清单（漏一处就会留下孤儿）：profile `package.json` 的 `dependencies`、`dsh.profile.bundles`、`node_modules/@dsh-external/<包>`、`_stage/pkgs/<包>`、工作区 `packages/<包>`。
+- 测试桩要跟着改：假 `ctx.remote` 要有 `$mount`（记录 spec），`apply` 要 `await`；否则断言跑在注册之前，或者直接 `ctx.remote.$mount is not a function`。
+- 合并后 `apply` 是 async，**所有**调用点（含离线测试）都要 await，否则后续断言看到的是「还没注册」。
+
+### 18.1 真正的坑：`remote.git` 是嵌套服务，必须两级 fiber（2026-11-01 实测）
+
+- 现象：重启后插件页报 `cannot get property "remote.git" without inject`，侧栏 Git 入口也不工作。
+- 根因：cordis 的 ctx proxy 把 `ctx.remote.git` 当**嵌套服务**解析（等价 `ctx.get("remote.git")`），只有 inject 过它的 fiber 才能读；而「提供它的 fiber」不能 inject 自己，否则永远等不到自己。这正是当初拆成两个包的真正原因，不是代码组织偏好。
+- 正确写法（单包也能做到）：
+  ```js
+  async function apply(ctx) {          // 外层：只挂载，inject 只写 ["remote"]
+    await ctx.remote.$mount(TYPERT_REMOTE);
+    await ctx.plugin(GitUiPlugin);     // 子 fiber：UI 全在这
+  }
+  GitUiPlugin.inject = ["slots", "locale", "remote.git"];
+  function GitUiPlugin(ctx) { /* 所有 slot 注册、store 副作用、设置面板 */ }
+  ```
+- `ctxRef` 要指向子 ctx，否则 UI 里的 `ctx.remote.git` 还是会撞守卫。
+- 离线测试桩：`plugin: async (fn) => { fn(fakeCtx); }`，`fakeCtx.remote.git` 用现成桩即可。
+
+## 19. GitHub 登录：GCM 能做与不能做（2026-11-01 实测）
+
+- 本机有 **Git Credential Manager 2.9.0**（`F:\Git\mingw64\bin\git-credential-manager.exe`，PATH 里有），命令齐全：
+  `github list` / `github login [--browser|--device|--pat <t>|--force]` / `github logout <account>`，都能加 `--no-ui`。
+- **`--device` 在本插件里不可用**：`--device --no-ui` 从子进程（无 tty）启动时**完全不输出验证码**，stdout/stderr 全空，连 HTTP 请求都没发出（`GCM_TRACE=1 GCM_TRACE_HTTP=1` 也只看到 "Creating new HTTP client"）。用户拿不到码 = 流程走不下去。别在这上面浪费时间。
+- **`--browser` 可用**：它 `shell-execute` 打开系统浏览器到 `github.com/login/oauth/authorize`（GCM 内置 client_id `0120e057bd645470c1ed`，PKCE，scope `repo gist workflow`），同时监听 `127.0.0.1:<随机端口>` 等回调，**不需要终端**。
+- `github list --no-ui` 输出就是纯文本，一行一个账号名（如 `LingQi-07-std`），没有 JSON；解析时过滤空行和 `info:`/`warn:` 开头。
+- 凭据落在 **Windows 凭据管理器**（DPAPI），`git push` 自动复用；插件这边不需要也不应该保存 token。
+- `--pat <token>` 是 GCM 唯一的 token 入口，token 会出现在**进程命令行**里（同机可见），GCM 没有 stdin 方式；这是它的限制，不是实现偷懒。
+- 浏览器登录是**长活**：`login` 会一直挂着等回调。做成「start 起子进程 + 返回会话 id + 每 2 秒 poll + 3 分钟超时 kill」，不要把 host 方法写成同步 await，否则一次调用能挂两分钟。
+- 失败时 GCM 把原因写在 **stderr**，还混着 trace 行；取第一行非 `HH:MM:SS`、非 `trace:`/`[RunInternalAsync]`/`[CreateClient]` 的行当错误文案。
+
+## 20. `h` 是 jsx，不是 createElement（2026-11-02 血泪）
+
+- 本 bundle 顶部：`const h = react_jsx_runtime.jsx;`、`const hs = react_jsx_runtime.jsxs;`。
+- `jsx(type, props)` **只接受两个参数**。写成 `h("div", { className }, [children])` 时，**第三个参数被静默丢弃**。
+- 症状极其迷惑：容器元素正常渲染（能查到 `.dshg-bubbles`、`data-*` 属性都在），但 `children.length === 0`，页面上什么都不显示，且**没有报错**。
+- 正确写法：`h("div", { className, children: [...] })`；多个 children 时用 `hs` 或直接塞 `children` 数组。
+- 排查手法：给容器加 `data-ahead="2"` 这类诊断属性，F12 里 `document.querySelector('.dshg-bubbles').dataset` 一看就知道「数据到了但子元素没渲染」，直接锁定是 children 丢失而不是数据问题。
+- 写新组件时，检查一遍别用三参数：`grep '^\t\+}, \[$'` 无匹配即安全。
+
+## 21. DetailPane 加新模式：两处必改（2026-11-02 第二次踩）
+
+`DetailPane` 的高度动画靠一个 `useLayoutEffect` + ResizeObserver 驱动，加第四种模式（`range`）时漏了两处，症状是「点了不展开 / 展开后不跟着内容变高」。
+
+**必须同时改两个地方：**
+
+1. **`useLayoutEffect` 的依赖数组**：加上该模式的 `xxxLoading`（ready 标志）。高度只在 effect 运行时重算，漏掉依赖 → loading 结束后 effect 不跑 → 面板永远停在占位高度，只有点别的模式（`contentKey` 变了）才被动展开。
+2. **占位高度的判断**：`if (el.style.height === "")` 要改成 `if (el.style.height === "" || el.style.height === "0px")`。**关闭过的面板留下的是内联 `"0px"` 而不是空串**，只判空串 → 再次打开时高度保持 0，看起来就是「点击没反应」。
+
+排查口诀：**「点击没反应」先看 height 是不是 0px；「内容变了面板不变高」先看 deps 漏没漏。**

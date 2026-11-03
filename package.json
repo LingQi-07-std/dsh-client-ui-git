@@ -1,7 +1,7 @@
 {
   "name": "@dsh-external/dsh-client-ui-git",
   "description": "Git visualizer for the dsh web GUI: branch/commit graph, working-tree status, and commit diff browser (read-only). Host half runs git via child_process; browser half renders a sidebar panel.",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "type": "module",
   "main": "lib/index.js",

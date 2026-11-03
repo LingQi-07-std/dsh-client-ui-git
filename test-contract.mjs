@@ -68,7 +68,7 @@ try {
 	check("manifest face/package", () => {
 		if (manifest.face !== "host") throw new Error("face != host");
 		if (manifest.package !== "@dsh-external/dsh-client-ui-git") throw new Error("package mismatch");
-		if (!Array.isArray(manifest.invocations) || manifest.invocations.length !== 35) throw new Error("expected 35 invocations, got " + manifest.invocations?.length);
+		if (!Array.isArray(manifest.invocations) || manifest.invocations.length !== 60) throw new Error("expected 50 invocations, got " + manifest.invocations?.length);
 		if (!Array.isArray(manifest.schemas)) throw new Error("schemas must be array");
 		if (typeof manifest.model !== "object" || !Array.isArray(manifest.model.services)) throw new Error("model malformed");
 	});
@@ -241,21 +241,21 @@ try {
 		if (decoded.ok !== true) throw new Error("restore failed");
 	});
 
-	// client.js no longer embeds the remote contribution: the mount moved to
-	// the separate @dsh-external/dsh-client-git-remote bundle (official
-	// api-remotes split, because cordis inject guards nested ctx access).
+	// The bundle now owns the mount AND the UI: the separate
+	// @dsh-external/dsh-client-git-remote plugin was merged into it. `remote.git`
+	// is a nested service, so activation is two-staged: the outer fiber mounts it
+	// (injecting only `remote`), the child `GitUiPlugin` fiber injects the
+	// namespace it did not mount.
 	const clientSource = readFileSync(new URL("./lib/client.js", import.meta.url), "utf8");
-	check("client.js declares remote.git inject + slot", () => {
-		if (!clientSource.includes('"remote.git"')) throw new Error("missing remote.git inject");
+	check("client.js mounts remote.git itself + slot", () => {
+		if (!clientSource.includes("$mount")) throw new Error("missing $mount");
+		if (!clientSource.includes('const inject = ["remote"]')) throw new Error('outer inject must be ["remote"] only');
+		if (!clientSource.includes('GitUiPlugin.inject = ["slots", "locale", "remote.git"]')) throw new Error("child fiber must inject remote.git");
 		if (!clientSource.includes("sidebar.footer.action")) throw new Error("missing slot registration");
-		if (clientSource.includes("$mount")) throw new Error("mount must live in git-remote, not ui");
-	});
-	const remoteSource = readFileSync(new URL("./packages/dsh-client-git-remote/lib/client.js", import.meta.url), "utf8");
-	check("git-remote bundle embeds mount", () => {
-		if (!remoteSource.includes("$mount")) throw new Error("missing $mount");
-		const marshalCalls = (remoteSource.match(/descrip\("/g) ?? []).length;
-		if (marshalCalls !== 35) throw new Error("expected 35 descriptors, got " + marshalCalls);
-		if (!remoteSource.includes('package: "@dsh-external/dsh-client-git-remote"')) throw new Error("missing package id");
+		const marshalCalls = (clientSource.match(/descrip\("/g) ?? []).length;
+		if (marshalCalls !== 60) throw new Error("expected 50 descriptors, got " + marshalCalls);
+		if (!clientSource.includes("package: PKG,")) throw new Error("remote contribution must be owned by this package");
+		if (clientSource.includes('id: "@dsh-external/dsh-client-git-remote"')) throw new Error("the separate remote package must be gone");
 	});
 
 	console.log(results.join("\n"));
