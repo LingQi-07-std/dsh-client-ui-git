@@ -15,4 +15,19 @@ Thumbs.db
 .vscode/
 .idea/
 
-# 注意：shots/ 是 README 引用的截图，属于文档，保留在版本库里。
+# 本地维护文档（会话记忆，不纳入版本库）
+AGENTS.md
+MEMORY.md
+
+# 只上传运行依赖；参考文档与设计原型留在本地
+docs/
+shots/
+
+# 本地草稿与调试脚本（远程仓库只保留项目代码）
+docs/persistence-protocol.txt
+test-live.mjs
+test-manual-rpc.mjs
+
+# 测试与开发脚本（远程只上传运行依赖）
+test-*.mjs
+scripts/
