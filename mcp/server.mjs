@@ -14,6 +14,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as git from './git-core.mjs'
+import * as githubAuth from './github-auth.mjs'
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url))
 
@@ -136,12 +137,26 @@ server.tool('init', '在目录初始化 git 仓库（不自动 commit）。可�
 	try { return wrap(await git.init(git.requireDir(path), { userName, userEmail })) } catch (e) { return fail(e) }
 })
 
+/** MCP-only commit identity (config.json mcpUserName / mcpUserEmail). */
+function mcpIdentity() {
+	try {
+		const config = JSON.parse(readFileSync(join(SERVER_DIR, 'config.json'), 'utf8'))
+		const name = typeof config?.mcpUserName === 'string' ? config.mcpUserName.trim() : ''
+		const email = typeof config?.mcpUserEmail === 'string' ? config.mcpUserEmail.trim() : ''
+		return name.length > 0 || email.length > 0 ? { name, email } : undefined
+	} catch {
+		return undefined
+	}
+}
+
 server.tool('commit', '提交。默认自动暂存全部改动（git add -A）；stagedOnly=true 时只提交已暂存内容。提交前建议先 status 确认。', {
 	path: z.string().describe(pathDesc),
 	message: z.string().describe('提交信息（必填，非空）'),
 	stagedOnly: z.boolean().optional().describe('true = 只提交已暂存的改动')
 }, async ({ path, message, stagedOnly }) => {
-	try { return wrap(await git.commit(git.requireDir(path), message, { stagedOnly: stagedOnly === true })) } catch (e) { return fail(e) }
+	try {
+		return wrap(await git.commit(git.requireDir(path), message, { stagedOnly: stagedOnly === true, identity: mcpIdentity() }))
+	} catch (e) { return fail(e) }
 })
 
 server.tool('add', '暂存指定路径（可多选）。不传路径不会执行，避免误把全部改动加进索引。', {
@@ -245,6 +260,253 @@ server.tool('tag', '标签管理：list（默认）/ create / delete。仅本地
 		return wrap(await git.tagList(dir, pattern))
 	} catch (e) { return fail(e) }
 })
+
+// ---- remote sync -----------------------------------------------------------
+
+server.tool('fetch', '拉取远程引用（不合并）：更新远端跟踪分支，不改工作区。', {
+	path: z.string().describe(pathDesc),
+	remote: z.string().optional().describe('远程名，默认 origin'),
+	account: z.string().optional().describe('指定 GitHub 账户（凭据）')
+}, async ({ path, remote, account }) => {
+	try { return wrap(await git.fetchRemote(git.requireDir(path), remote ?? '', account)) } catch (e) { return fail(e) }
+})
+
+server.tool('pull', '拉取远程分支并合并进当前分支（--no-rebase）。', {
+	path: z.string().describe(pathDesc),
+	remote: z.string().optional().describe('远程名，默认 origin'),
+	branch: z.string().optional().describe('远程分支名，省略则用当前分支'),
+	account: z.string().optional().describe('指定 GitHub 账户（凭据）')
+}, async ({ path, remote, branch, account }) => {
+	try { return wrap(await git.pullRemote(git.requireDir(path), remote ?? '', branch ?? '', account)) } catch (e) { return fail(e) }
+})
+
+server.tool('push', '推送当前分支。force=true 会改写远程历史，需要开启危险工具开关。', {
+	path: z.string().describe(pathDesc),
+	remote: z.string().optional().describe('远程名，默认 origin'),
+	branch: z.string().optional().describe('分支名，省略则用当前分支'),
+	setUpstream: z.boolean().optional().describe('同时设置上游（-u）'),
+	force: z.boolean().optional().describe('危险：--force-with-lease，仅危险开关开启时可用'),
+	account: z.string().optional().describe('指定 GitHub 账户（凭据）')
+}, async ({ path, remote, branch, setUpstream, force, account }) => {
+	try {
+		if (force === true && !dangerousToolsEnabled()) {
+			return fail(new Error('force 推送属于危险操作：需要在 config.json 打开 allowDangerousTools'))
+		}
+		return wrap(await git.pushRemote(git.requireDir(path), remote ?? '', branch ?? '', { force: force === true, setUpstream: setUpstream === true, account }))
+	} catch (e) { return fail(e) }
+})
+
+server.tool('sync_status', '与上游的差异：ahead/behind 提交列表（含短哈希、作者、标题）与涉及文件。', {
+	path: z.string().describe(pathDesc)
+}, async ({ path }) => {
+	try { return wrap(await git.syncCommits(git.requireDir(path))) } catch (e) { return fail(e) }
+})
+
+server.tool('remote_branches', '远程分支列表（含对应本地分支、是否被跟踪）。', {
+	path: z.string().describe(pathDesc)
+}, async ({ path }) => {
+	try { return wrap(await git.remoteBranches(git.requireDir(path))) } catch (e) { return fail(e) }
+})
+
+server.tool('remote_info', '远程配置：名称、URL、是否 GitHub、owner/repo、默认分支。', {
+	path: z.string().describe(pathDesc)
+}, async ({ path }) => {
+	try { return wrap(await git.remoteInfo(git.requireDir(path))) } catch (e) { return fail(e) }
+})
+
+server.tool('add_remote', '给仓库添加远程（git remote add）。', {
+	path: z.string().describe(pathDesc),
+	url: z.string().describe('远程 URL'),
+	name: z.string().optional().describe('远程名，默认 origin')
+}, async ({ path, url, name }) => {
+	try { return wrap(await git.addRemote(git.requireDir(path), url, name ?? 'origin')) } catch (e) { return fail(e) }
+})
+
+server.tool('remove_remote', '移除远程（git remote remove）。只改本地配置，不删远程仓库。', {
+	path: z.string().describe(pathDesc),
+	name: z.string().describe('要移除的远程名')
+}, async ({ path, name }) => {
+	try { return wrap(await git.removeRemote(git.requireDir(path), name)) } catch (e) { return fail(e) }
+})
+
+server.tool('link_upstream', '把本地分支关联到已存在的远程分支（git branch --set-upstream-to）。', {
+	path: z.string().describe(pathDesc),
+	branch: z.string().describe('本地分支名'),
+	upstream: z.string().describe('远程分支（如 origin/main）')
+}, async ({ path, branch, upstream }) => {
+	try { return wrap(await git.linkUpstream(git.requireDir(path), branch, upstream)) } catch (e) { return fail(e) }
+})
+
+// ---- history rewrite / operations -----------------------------------------
+
+server.tool('rebase', '把当前分支变基到指定上游（会重写本分支提交，之后推送需要 force）。', {
+	path: z.string().describe(pathDesc),
+	upstream: z.string().describe('目标上游（分支或提交）'),
+	source: z.string().optional().describe('可选：先切换到这个分支再变基')
+}, async ({ path, upstream, source }) => {
+	try { return wrap(await git.rebase(git.requireDir(path), upstream, source)) } catch (e) { return fail(e) }
+})
+
+server.tool('rebase_skip', '变基冲突时跳过当前提交。', {
+	path: z.string().describe(pathDesc)
+}, async ({ path }) => {
+	try { return wrap(await git.rebaseSkip(git.requireDir(path))) } catch (e) { return fail(e) }
+})
+
+server.tool('operation_continue', '冲突解决后继续进行中的操作（merge / rebase / cherry-pick / squash）。', {
+	path: z.string().describe(pathDesc),
+	kind: z.enum(['merge', 'rebase', 'cherry-pick', 'revert', 'squash']).describe('进行中的操作类型')
+}, async ({ path, kind }) => {
+	try { return wrap(await git.operationContinue(git.requireDir(path), kind)) } catch (e) { return fail(e) }
+})
+
+server.tool('merge_preview', '合并预检：ff-only 是否可行、将会冲突的文件。', {
+	path: z.string().describe(pathDesc),
+	target: z.string().describe('目标分支'),
+	source: z.string().describe('要合并进来的分支')
+}, async ({ path, target, source }) => {
+	try { return wrap(await git.mergePreview(git.requireDir(path), target, source)) } catch (e) { return fail(e) }
+})
+
+server.tool('branch_details', '分支详情：上游、最近提交、创建信息。', {
+	path: z.string().describe(pathDesc)
+}, async ({ path }) => {
+	try { return wrap(await git.branchDetails(git.requireDir(path))) } catch (e) { return fail(e) }
+})
+
+server.tool('orphaned_commits', '回收站：不在任何分支上的游离提交（误操作后可找回）。', {
+	path: z.string().describe(pathDesc),
+	limit: z.number().optional().describe('最多返回条数，默认 50')
+}, async ({ path, limit }) => {
+	try { return wrap(await git.orphanedCommits(git.requireDir(path), limit ?? 50)) } catch (e) { return fail(e) }
+})
+
+server.tool('conflict_file', '读取冲突文件里的冲突块内容。', {
+	path: z.string().describe(pathDesc),
+	file: z.string().describe('仓库内相对路径')
+}, async ({ path, file }) => {
+	try { return wrap(await git.conflictFile(git.requireDir(path), file)) } catch (e) { return fail(e) }
+})
+
+server.tool('range_diff', '两个提交区间的 diff（提交之间的整体改动）。', {
+	path: z.string().describe(pathDesc),
+	from: z.string().describe('区间起点提交'),
+	to: z.string().describe('区间终点提交'),
+	paths: z.array(z.string()).optional().describe('限定路径')
+}, async ({ path, from, to, paths }) => {
+	try { return wrap(await git.rangeDiff(git.requireDir(path), from, to, paths)) } catch (e) { return fail(e) }
+})
+
+server.tool('reflog_events', 'reflog 事件（分支创建、合并、检出等，供时间线补全）。', {
+	path: z.string().describe(pathDesc)
+}, async ({ path }) => {
+	try { return wrap(await git.reflogEvents(git.requireDir(path))) } catch (e) { return fail(e) }
+})
+
+// ---- GitHub: accounts / PRs -------------------------------------------------
+
+function createRepoAllowed() {
+	if (process.env.DSH_GIT_ALLOW_CREATE_REPO === '1') return true
+	try {
+		const config = JSON.parse(readFileSync(join(SERVER_DIR, 'config.json'), 'utf8'))
+		return config?.allowCreateRepo === true
+	} catch { return false }
+}
+
+/** Fill owner/repo from the repository's remote when the caller omitted them. */
+async function resolveRepo(dir, owner, repo) {
+	if (typeof owner === 'string' && owner.length > 0 && typeof repo === 'string' && repo.length > 0) {
+		return { owner, repo }
+	}
+	const info = await git.remoteInfo(dir)
+	return { owner: info.owner ?? '', repo: info.repo ?? '' }
+}
+
+server.tool('github_accounts', 'Git Credential Manager 中已登录的 GitHub 账户列表。', {}, async () => {
+	try { return wrap(await githubAuth.listAccounts()) } catch (e) { return fail(e) }
+})
+
+server.tool('github_user', '某个账户对应的 GitHub 用户（登录名、头像地址）。', {
+	account: z.string().optional().describe('账户名，省略则用默认账户')
+}, async ({ account }) => {
+	try { return wrap(await githubAuth.githubUser(account)) } catch (e) { return fail(e) }
+})
+
+server.tool('repo_permission', '当前账户对仓库的推送权限（canPush / reason）。', {
+	path: z.string().describe(pathDesc),
+	owner: z.string().optional().describe('仓库 owner，省略则从远程推导'),
+	repo: z.string().optional().describe('仓库名，省略则从远程推导'),
+	account: z.string().optional().describe('指定账户')
+}, async ({ path, owner, repo, account }) => {
+	try {
+		const dir = git.requireDir(path)
+		const resolved = await resolveRepo(dir, owner, repo)
+		return wrap(await githubAuth.repoPermission(account, resolved.owner, resolved.repo))
+	} catch (e) { return fail(e) }
+})
+
+server.tool('repo_info', '仓库信息（fork 关系、父仓库等）。', {
+	path: z.string().describe(pathDesc),
+	owner: z.string().optional().describe('仓库 owner，省略则从远程推导'),
+	repo: z.string().optional().describe('仓库名，省略则从远程推导'),
+	account: z.string().optional().describe('指定账户')
+}, async ({ path, owner, repo, account }) => {
+	try {
+		const dir = git.requireDir(path)
+		const resolved = await resolveRepo(dir, owner, repo)
+		return wrap(await githubAuth.repoInfo(account, resolved.owner, resolved.repo))
+	} catch (e) { return fail(e) }
+})
+
+server.tool('list_prs', 'PR 列表：给定 branch 查该分支的 PR（含 incoming/outgoing）；否则查全部打开/关闭的 PR。', {
+	path: z.string().describe(pathDesc),
+	branch: z.string().optional().describe('只看这个分支的 PR'),
+	owner: z.string().optional().describe('仓库 owner，省略则从远程推导'),
+	repo: z.string().optional().describe('仓库名，省略则从远程推导'),
+	account: z.string().optional().describe('指定账户')
+}, async ({ path, branch, owner, repo, account }) => {
+	try {
+		const dir = git.requireDir(path)
+		const resolved = await resolveRepo(dir, owner, repo)
+		if (typeof branch === 'string' && branch.length > 0) {
+			return wrap(await githubAuth.listPullRequests(account, resolved.owner, resolved.repo, branch))
+		}
+		return wrap(await githubAuth.listAllPullRequests(account, resolved.owner, resolved.repo, branch ?? ''))
+	} catch (e) { return fail(e) }
+})
+
+server.tool('create_pr', '创建 PR：head/base 必填（head 跨仓库写成 "owner:branch"）。', {
+	path: z.string().describe(pathDesc),
+	title: z.string().describe('PR 标题'),
+	head: z.string().describe('来源分支（跨仓库：owner:branch）'),
+	base: z.string().describe('目标分支（如 main）'),
+	body: z.string().optional().describe('PR 描述'),
+	draft: z.boolean().optional().describe('草稿 PR'),
+	owner: z.string().optional().describe('仓库 owner，省略则从远程推导'),
+	repo: z.string().optional().describe('仓库名，省略则从远程推导'),
+	account: z.string().optional().describe('指定账户')
+}, async ({ path, title, head, base, body, draft, owner, repo, account }) => {
+	try {
+		const dir = git.requireDir(path)
+		const resolved = await resolveRepo(dir, owner, repo)
+		return wrap(await githubAuth.createPullRequest(account, resolved.owner, resolved.repo, { title, head, base, body, draft: draft === true }))
+	} catch (e) { return fail(e) }
+})
+
+// Creating a repository is a separate opt-in (config.json allowCreateRepo), on top
+// of the dangerous-tool switch — matching the panel's "allow creating repos" setting.
+if (createRepoAllowed()) {
+	server.tool('create_repo', '创建一个空仓库（需在配置中开启 allowCreateRepo）。', {
+		name: z.string().describe('仓库名'),
+		description: z.string().optional().describe('仓库描述'),
+		private: z.boolean().optional().describe('是否私有，默认 true'),
+		account: z.string().optional().describe('指定账户')
+	}, async ({ name, description, private: isPrivate, account }) => {
+		try {
+			return wrap(await githubAuth.createRepo(account, { name, description, private: isPrivate !== false }))
+		} catch (e) { return fail(e) }
+	})
+}
 
 // ---- dangerous set (opt-in only) -------------------------------------------
 
