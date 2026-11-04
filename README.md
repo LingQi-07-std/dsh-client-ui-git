@@ -6,8 +6,6 @@
 - 依赖：host 半仅需 `@deepseek-ai/dsh-typert-protocol`（运行时）；client 半无外部依赖（内联 mini-zod）
 - 只读方式：浏览类方法都是只读 git 命令；写入集中在「安全写」（init/commit/checkout/revert/merge）与「危险写」（restore/reset）两档，危险写只出现在 UI 里、必须经确认弹窗
 
-跨会话技术细节见 [AGENTS.md](AGENTS.md)，踩坑记录见 [MEMORY.md](MEMORY.md)。
-
 ## 结构
 
 | 文件 | 职责 |
@@ -18,7 +16,6 @@
 | `lib/client.js` | client 半：内联 mini-zod + 侧边栏入口 + 抽屉面板 |
 | `packages/dsh-client-git-remote/` | client 半的 `git` namespace 挂载插件（`ctx.remote.$mount`） |
 | `locale/{zh,en}.json` | 插件页显示名称与描述 |
-| `test-*.mjs` | 测试套件（见下） |
 
 ## Remote 服务（namespace `git`，共 14 个方法）
 
