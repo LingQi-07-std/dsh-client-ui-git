@@ -149,13 +149,31 @@ function mcpIdentity() {
 	}
 }
 
+/**
+ * Account the MCP server uses for credentials when the caller passes none.
+ * GCM pops up an account picker when several users are logged in, and that
+ * dialog blocks a headless MCP call: pinning `credential.username` avoids it.
+ */
+function mcpAccount() {
+	try {
+		const config = JSON.parse(readFileSync(join(SERVER_DIR, 'config.json'), 'utf8'))
+		const account = typeof config?.mcpAccount === 'string' ? config.mcpAccount.trim() : ''
+		return account.length > 0 ? account : undefined
+	} catch {
+		return undefined
+	}
+}
+
 server.tool('commit', '提交。默认自动暂存全部改动（git add -A）；stagedOnly=true 时只提交已暂存内容。提交前建议先 status 确认。', {
 	path: z.string().describe(pathDesc),
 	message: z.string().describe('提交信息（必填，非空）'),
 	stagedOnly: z.boolean().optional().describe('true = 只提交已暂存的改动')
 }, async ({ path, message, stagedOnly }) => {
 	try {
-		return wrap(await git.commit(git.requireDir(path), message, { stagedOnly: stagedOnly === true, identity: mcpIdentity() }))
+		const identity = mcpIdentity()
+		// MCP commits always carry the configured MCP identity: it wins over the
+		// repo/user git config so agent-made commits stay distinguishable.
+		return wrap(await git.commit(git.requireDir(path), message, { stagedOnly: stagedOnly === true, identity, forceIdentity: identity !== undefined }))
 	} catch (e) { return fail(e) }
 })
 
@@ -268,7 +286,7 @@ server.tool('fetch', '拉取远程引用（不合并）：更新远端跟踪分�
 	remote: z.string().optional().describe('远程名，默认 origin'),
 	account: z.string().optional().describe('指定 GitHub 账户（凭据）')
 }, async ({ path, remote, account }) => {
-	try { return wrap(await git.fetchRemote(git.requireDir(path), remote ?? '', account)) } catch (e) { return fail(e) }
+	try { return wrap(await git.fetchRemote(git.requireDir(path), remote ?? '', account ?? mcpAccount())) } catch (e) { return fail(e) }
 })
 
 server.tool('pull', '拉取远程分支并合并进当前分支（--no-rebase）。', {
@@ -277,7 +295,7 @@ server.tool('pull', '拉取远程分支并合并进当前分支（--no-rebase）
 	branch: z.string().optional().describe('远程分支名，省略则用当前分支'),
 	account: z.string().optional().describe('指定 GitHub 账户（凭据）')
 }, async ({ path, remote, branch, account }) => {
-	try { return wrap(await git.pullRemote(git.requireDir(path), remote ?? '', branch ?? '', account)) } catch (e) { return fail(e) }
+	try { return wrap(await git.pullRemote(git.requireDir(path), remote ?? '', branch ?? '', account ?? mcpAccount())) } catch (e) { return fail(e) }
 })
 
 server.tool('push', '推送当前分支。force=true 会改写远程历史，需要开启危险工具开关。', {
@@ -292,7 +310,7 @@ server.tool('push', '推送当前分支。force=true 会改写远程历史，需
 		if (force === true && !dangerousToolsEnabled()) {
 			return fail(new Error('force 推送属于危险操作：需要在 config.json 打开 allowDangerousTools'))
 		}
-		return wrap(await git.pushRemote(git.requireDir(path), remote ?? '', branch ?? '', { force: force === true, setUpstream: setUpstream === true, account }))
+		return wrap(await git.pushRemote(git.requireDir(path), remote ?? '', branch ?? '', { force: force === true, setUpstream: setUpstream === true, account: account ?? mcpAccount() }))
 	} catch (e) { return fail(e) }
 })
 
