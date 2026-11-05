@@ -134,7 +134,14 @@ server.tool('init', '在目录初始化 git 仓库（不自动 commit）。可�
 	userName: z.string().optional().describe('可选：设置 user.name'),
 	userEmail: z.string().optional().describe('可选：设置 user.email')
 }, async ({ path, userName, userEmail }) => {
-	try { return wrap(await git.init(git.requireDir(path), { userName, userEmail })) } catch (e) { return fail(e) }
+	try {
+		// MCP initializes with the MCP identity unless the caller pins another one.
+		const identity = mcpIdentity()
+		return wrap(await git.init(git.requireDir(path), {
+			userName: userName ?? identity?.name,
+			userEmail: userEmail ?? identity?.email
+		}))
+	} catch (e) { return fail(e) }
 })
 
 /** MCP-only commit identity (config.json mcpUserName / mcpUserEmail). */
