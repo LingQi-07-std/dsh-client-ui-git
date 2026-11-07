@@ -1,124 +1,65 @@
 # dsh-client-ui-git — DSH Git 可视化插件
 
-在 DeepSeek Harness Web GUI 的侧边栏底部提供一个 Git 按钮（当前分支名 + 未提交改动徽标），点击打开右侧抽屉：当前会话工作区的仓库概览、工作区状态、提交历史图，以及单提交的 diff 浏览与安全回退操作。
+在 DeepSeek Harness Web GUI 的侧边栏底部放一个 Git 按钮（当前分支 + 未提交改动徽标），点开右侧抽屉即可查看并操作当前会话工作区的仓库：提交图、工作区状态、单提交 diff、分支、暂存（stash）、合并冲突、远程同步，以及仓库级设置。
 
-- 语言/框架：纯 JS（无构建步骤），host 半 ESM（cordis 插件），client 半 `__ModuleLoader__` bundle
-- 依赖：host 半仅需 `@deepseek-ai/dsh-typert-protocol`（运行时）；client 半无外部依赖（内联 mini-zod）
-- 只读方式：浏览类方法都是只读 git 命令；写入集中在「安全写」（init/commit/checkout/revert/merge）与「危险写」（restore/reset）两档，危险写只出现在 UI 里、必须经确认弹窗
+## 功能
+
+- **提交时间线**：`git log --all` 的提交图，含合并节点、分支/远程胶囊、reflog 事件（建分支、合并、reset）卡片、stash 卡片与回收站（游离提交）；支持双击查看、分支筛选（按圆点勾选，可保存到插件内存储）。
+- **工作区**：按目录分组的未跟踪/修改/暂存文件树，可逐文件或整组提交、暂存、回退。
+- **提交详情**：选中提交后查看其文件列表（增删行数）与 patch，支持检出、还原（生成反向提交）、硬回退（仅已提交且未推送）。
+- **分支管理**：分支浮层显示本地分支的上游/领先落后、最后提交与创建信息；支持新建、切换、重命名、删除（含彻底删除与游离预览）、合并（ff-only / no-ff / squash）。
+- **合并冲突**：冲突状态下显示进度条、冲突文件树与冲突块着色，支持继续/中止，状态在 `.git` 里，重开面板可恢复。
+- **暂存与回收站**：stash 的列出、应用、弹出、开分支、删除；回收站列出不在任何分支上的游离提交并可恢复。
+- **远程同步**：关联/更改/移除远程、fetch、pull、push（force-with-lease）、ahead/behind 气泡、PR 列表与创建（GitHub）。
+- **仓库设置**：仓库级 `user.name` / `user.email`、固定凭据账户、`.gitignore` 规则编辑（规则列表 + 忽略文件清单 + 白名单模式提示 + 检查器）、打开仓库页面。
+- **MCP 工具**：同仓库内的 `mcp/server.mjs` 提供一套 Git MCP 工具（46 个默认工具 + 按需开启的危险工具），源与运行副本用 `node scripts/sync-mcp.mjs` 同步。
+
+## 安装
+
+从 GitHub 安装（需要 DSH `>=0.2.0-rc.2 <0.3.0`）：
+
+```sh
+dsh plugin add https://github.com/LingQi-07-std/dsh-client-ui-git
+```
+
+本地开发时也可以把工作区目录加进 profile 的 `dependencies`（`file:` 路径）后重启 DSH。
+
+## 配置
+
+- **插件设置页**（DSH 设置 → 插件）与面板内设置：
+  - 提交身份：`user.name` / `user.email`（仅补空缺，不覆盖已有仓库/全局配置）；
+  - 当前账户：GitHub 凭据账户（空则交给 Git Credential Manager）；
+  - 分支隐藏提示、PR 收入更多栏、背景 fetch 超时等开关。
+- **仓库设置**（面板「更多」菜单）：仓库级身份、固定凭据账户、`.gitignore` 编辑。
+- **MCP**：危险工具（`restore`、`reset`）默认关闭，在设置里开启后会写入 `$DSH_HOME/mcp-git/config.json`，下次启动 MCP 服务生效。
 
 ## 结构
 
 | 文件 | 职责 |
 |---|---|
-| `lib/index.js` | host 半：`GitGateway`（`git` Remote 服务），用 `child_process.spawn` 跑 git 命令 |
+| `lib/index.js` | host 半：`GitGateway`（`git` Remote 服务），用 `child_process.spawn` 跑 git |
 | `lib/git-core.mjs` | 纯函数层：命令封装、porcelain 解析、读写实现 |
-| `lib/typert.host.js` | host 半 TYPERT manifest（`exports["./typert"]`），由 `dsh-typert-loader` 自动注册 |
-| `lib/client.js` | client 半：内联 mini-zod + 侧边栏入口 + 抽屉面板 |
-| `packages/dsh-client-git-remote/` | client 半的 `git` namespace 挂载插件（`ctx.remote.$mount`） |
+| `lib/typert.host.js` | host 半 TYPERT manifest |
+| `lib/client.js` | client 半：store、侧边栏入口、抽屉面板、分支浮层、冲突视图、设置页（含 CSS） |
+| `mcp/server.mjs` | 独立 MCP 服务（stdio），通过 GCM 复用凭据 |
 | `locale/{zh,en}.json` | 插件页显示名称与描述 |
 
-## Remote 服务（namespace `git`，共 14 个方法）
+`remote.git` 由本包的 client 半自己挂载（外层 `apply` 先 `$mount`，UI 注册在子 fiber 里）。
 
-| 分组 | 方法 | 请求 | 返回 |
-|---|---|---|---|
-| 读 | `snapshot` | `{path}` | `{repo, path, root?, branch?, head?, clean?, changes?, ahead?, behind?}` |
-| 读 | `log` | `{path, limit?}` | `{commits: [{hash, short, parents[], refs[], author, email, date, subject}]}` |
-| 读 | `status` | `{path}` | `{clean, entries: [{x, y, path}]}`（porcelain 语义） |
-| 读 | `diff` | `{path, commit}` | `{commit, files: [{path, added, removed, binary}], patch, truncated}` |
-| 读 | `branch` | `{path}` | `{branches: string[]}` |
-| 读 | `isRepo` | `{path}` | `{repo, error?}` |
-| 安全写 | `init` | `{path, userName?, userEmail?}` | `{ok, message}` / `{ok:false, error}` |
-| 安全写 | `commit` | `{path, message}` | `{ok, message, id?}`（自动 `add -A`） |
-| 安全写 | `createBranch` | `{path, name, from?}` | `{ok, message}` |
-| 安全写 | `checkout` | `{path, target}` | `{ok, message}`（非本地分支则游离 HEAD） |
-| 安全写 | `revert` | `{path, commit}` | `{ok, message}`（生成反向提交） |
-| 安全写 | `merge` | `{path, target}` | `{ok, message}` / `{ok:false, error, conflicts?}` |
-| 危险写 | `restore` | `{path, paths?}` | `{ok, message}`（丢弃未提交改动） |
-| 危险写 | `reset` | `{path, commit}` | `{ok, message}`（`--hard`，仅本地未推送） |
-
-调用示例（浏览器，返回 `{ok, value}`）：
-
-```js
-const result = await ctx.remote.git.snapshot({ path: "G:/repo" });
-if (result.ok) console.log(result.value.branch);
-```
-
-## MCP 工具（`mcp/server.mjs`，本地能力，不含联网）
-
-源在仓库 `mcp/server.mjs`，运行副本 `$DSH_HOME/mcp-git/server.mjs`（用 `node scripts/sync-mcp.mjs` 部署，改完重启 DSH）。
-
-| 分组 | 工具 |
-|---|---|
-| 只读 | `snapshot`、`log`（可按 paths/author/since/grep 过滤）、`status`、`diff`（提交 / 工作区 / 暂存区，可限定 paths 或只看 stat）、`show_file`、`branch`、`is_repo`、`blame`、`reflog` |
-| 安全写 | `init`、`commit`（`stagedOnly` 可选）、`add`、`unstage`、`create_branch`、`branch_admin`（rename/delete）、`checkout`、`revert`、`merge`、`reset_soft`（撤销提交保留改动）、`abort`（merge/revert/cherry-pick）、`stash`（push/pop/apply/drop/list/show）、`tag`（list/create/delete） |
-| 危险（默认关闭） | `restore`（丢弃改动）、`reset`（硬回退） |
-
-危险工具默认**不注册**，开启方式（后续设置页就是写这个配置）：
-
-```json
-// $DSH_HOME/mcp-git/config.json
-{ "allowDangerousTools": true }
-```
-
-或临时用环境变量 `DSH_GIT_ALLOW_DANGEROUS=1`。
-
-## UI
-
-- 挂载点：`sidebar.footer.action`（侧边栏底部，与设置、用量统计同排）
-  - 撑开模式：分支图标 + 分支名 + 未提交数徽标；收起模式：图标 + 徽标
-  - 工作区由 `useSessions`（当前会话的 `cwd`）决定，切换会话自动刷新；无会话时退到最近工作区
-- 抽屉（宽 `min(440px, 100vw-32px)`）：
-  - 头部：仓库名、干净/改动徽标、分支徽标、刷新、关闭
-  - 操作行：提交存档 / 新建分支 / 切换分支 / 合并分支 / 丢弃改动（全部二次确认）
-  - 工作区状态：按目录分组、可折叠，状态字母着色
-  - 提交时间线：第一父链 + merge 标记 + refs 标签
-  - 选中提交后切到 40/60 详情：该提交的文件 numstat + patch（截断提示）+ 回退/还原/硬回退
-- 样式全部走 DSH alias-token CSS 变量（`--dsw-alias-*`），light/dark 与阿罗娜主题自动适配
-
-## 安装与部署
-
-本机链路（`file:` 依赖 + 复制安装）：
-
-1. 工作区 → `G:\DSHDesktopPluginRemove\_stage\pkgs\dsh-client-ui-git`
-2. `_stage` → `%DSH_PROFILE_DIR%\node_modules\@dsh-external\dsh-client-ui-git`
-3. 重启 DSH（host 半/manifest 改动必须重启；仅 client 改动可先刷新页面试）
-
-profile 的 `package.json` 需要两行：
-
-```json
-{
-  "dependencies": { "@dsh-external/dsh-client-ui-git": "file:G:/DSHDesktopPluginRemove/_stage/pkgs/dsh-client-ui-git" },
-  "dsh": { "profile": { "bundles": ["@dsh-external/dsh-client-git-remote", "@dsh-external/dsh-client-ui-git"] } }
-}
-```
-
-`cordis.patch.yml` 里插入两行（git-remote 必须先于 ui-git，前者负责挂载 `remote.git`）：
-
-```yaml
-- insert:
-    - id: git-remote
-      name: '@dsh-external/dsh-client-git-remote'
-- insert:
-    - id: ui-git
-      name: '@dsh-external/dsh-client-ui-git'
-```
-
-## 开发/验证
+## 开发与验证
 
 ```powershell
-node test-gitcore.mjs        # git-core 读写全流程（临时仓库）
-node test-host.mjs           # GitGateway 端到端
-node test-contract.mjs       # TYPERT schema 与 client mini-zod 双端契约
-node test-install.mjs        # 安装校验 + 部署漂移（DSH_PROFILE_DIR，逐文件 SHA256）
-node test-client-offline.mjs # 真 bundle 离线渲染：入口 / 抽屉 / 提交 diff
-node test-live.mjs [dir]     # 打真实 GUI 的 /api/git/*（DSH_WEB_URL，可带 ?token=）
-node test-manual-rpc.mjs [dir] # 真实 GUI 上的 init/commit 流程
+node test-gitcore.mjs         # git-core 读写全流程（临时仓库）
+node test-gitcore-extended.mjs
+node test-host.mjs            # GitGateway 端到端
+node test-contract.mjs        # TYPERT 与 client mini-zod 双端契约
+node test-client-offline.mjs  # 真 bundle 离线渲染
+node test-install.mjs         # 安装校验与部署漂移（逐文件 SHA256）
 ```
 
-工作区没有真实依赖树：`node_modules/@deepseek-ai`、`node_modules/zod` 是指向 harness / desktop profile 的 junction（已在 `.gitignore`）。
+host 半（`lib/index.js`、`lib/typert.host.js`、`lib/git-core.mjs`）改动需要重启 DSH；只改 `lib/client.js` 刷新页面即可。
 
-注意：
-- host 半不能用原生 decorator 语法（`@Remote`），strict 路径由 manifest 提供，类方法普通实现即可
-- client 半**不要** inject `"remote.git"` 之外的挂载逻辑（`$mount` 在 git-remote 的 apply 内），此处只声明注入
-- client 半 schema 会被 api-gateway 真实 `parse()`（参数与结果都校验），mini-zod 必须返回真值
-- 分支规矩：任何改动先开分支，老师验收通过后再合并 `main`
+## 说明
+
+- 所有写操作都在 UI 里二次确认；悬停元素 + 修饰键（Alt/Ctrl/Shift，可配置）可把文件、提交、分支等引用插入对话输入框。
+- 依赖官方 `@deepseek-ai/*` 包声明为 `peerDependencies`。
